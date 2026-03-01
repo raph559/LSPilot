@@ -1,0 +1,105 @@
+{
+  "name": "lspilot",
+  "displayName": "LSPilot",
+  "description": "Copilot-like inline completions powered by LM Studio.",
+  "version": "0.0.1",
+  "publisher": "raph559",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.88.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:lspilot.triggerInlineCompletion",
+    "onCommand:lspilot.testConnection"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "lspilot.triggerInlineCompletion",
+        "title": "LSPilot: Trigger Inline Completion"
+      },
+      {
+        "command": "lspilot.testConnection",
+        "title": "LSPilot: Test LM Studio Connection"
+      }
+    ],
+    "configuration": {
+      "title": "LSPilot",
+      "properties": {
+        "lspilot.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable LSPilot inline completions."
+        },
+        "lspilot.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:1234/v1",
+          "description": "LM Studio OpenAI-compatible API base URL."
+        },
+        "lspilot.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model ID to use. Leave empty to auto-pick the first loaded model."
+        },
+        "lspilot.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for inline completions."
+        },
+        "lspilot.maxTokens": {
+          "type": "number",
+          "default": 96,
+          "minimum": 8,
+          "maximum": 1024,
+          "description": "Maximum completion tokens returned by LM Studio."
+        },
+        "lspilot.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "maximum": 120000,
+          "description": "Request timeout in milliseconds."
+        },
+        "lspilot.minRequestGapMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "Minimum delay between requests for the same document."
+        },
+        "lspilot.maxLines": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 64,
+          "description": "Maximum number of lines in one inline completion."
+        },
+        "lspilot.systemPrompt": {
+          "type": "string",
+          "default": "You are a coding assistant that returns only the next code continuation. Do not explain. Do not wrap output in markdown fences.",
+          "description": "System prompt for completion behavior."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/vscode": "^1.88.0",
+    "typescript": "^5.4.5",
+    "vsce": "^2.15.0"
+  }
+}
