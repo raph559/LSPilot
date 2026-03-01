@@ -15,12 +15,28 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onView:lspilot.chatView",
+    "onCommand:lspilot.openChat",
+    "onCommand:lspilot.selectModel",
+    "onCommand:lspilot.clearChat",
     "onCommand:lspilot.triggerInlineCompletion",
     "onCommand:lspilot.testConnection"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "lspilot.openChat",
+        "title": "LSPilot: Open Chat"
+      },
+      {
+        "command": "lspilot.selectModel",
+        "title": "LSPilot: Select Model"
+      },
+      {
+        "command": "lspilot.clearChat",
+        "title": "LSPilot: Clear Chat"
+      },
       {
         "command": "lspilot.triggerInlineCompletion",
         "title": "LSPilot: Trigger Inline Completion"
@@ -30,6 +46,38 @@
         "title": "LSPilot: Test LM Studio Connection"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lspilotSidebar",
+          "title": "LSPilot",
+          "icon": "media/lspilot.svg"
+        }
+      ]
+    },
+    "views": {
+      "lspilotSidebar": [
+        {
+          "id": "lspilot.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "lspilot.selectModel",
+          "when": "view == lspilot.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lspilot.clearChat",
+          "when": "view == lspilot.chatView",
+          "group": "navigation@2"
+        }
+      ]
+    },
     "configuration": {
       "title": "LSPilot",
       "properties": {
@@ -46,7 +94,7 @@
         "lspilot.model": {
           "type": "string",
           "default": "",
-          "description": "Model ID to use. Leave empty to auto-pick the first loaded model."
+          "description": "Model ID to use. Leave empty for no selected model."
         },
         "lspilot.temperature": {
           "type": "number",
@@ -69,6 +117,20 @@
           "maximum": 120000,
           "description": "Request timeout in milliseconds."
         },
+        "lspilot.chatTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "maximum": 600000,
+          "description": "Timeout in milliseconds for chat responses."
+        },
+        "lspilot.modelLoadTimeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "minimum": 5000,
+          "maximum": 600000,
+          "description": "Timeout in milliseconds when loading a model in LM Studio."
+        },
         "lspilot.minRequestGapMs": {
           "type": "number",
           "default": 300,
@@ -83,10 +145,22 @@
           "maximum": 64,
           "description": "Maximum number of lines in one inline completion."
         },
+        "lspilot.chatMaxTokens": {
+          "type": "number",
+          "default": 512,
+          "minimum": 32,
+          "maximum": 4096,
+          "description": "Maximum token budget for chat responses."
+        },
         "lspilot.systemPrompt": {
           "type": "string",
           "default": "You are a coding assistant that returns only the next code continuation. Do not explain. Do not wrap output in markdown fences.",
           "description": "System prompt for completion behavior."
+        },
+        "lspilot.chatSystemPrompt": {
+          "type": "string",
+          "default": "You are a helpful coding assistant inside VS Code. Give direct, practical answers with runnable code when useful.",
+          "description": "System prompt for chat behavior."
         }
       }
     }
