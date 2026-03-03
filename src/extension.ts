@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { LSPilotChatViewProvider } from "./chat/lspilotChatViewProvider";
+import { LSPilotDiffProvider } from "./chat/lspilotDiffProvider";
 import { LMStudioClient } from "./client/lmStudioClient";
 import { loadModelWithProgress, selectModel } from "./commands/selectModel";
 
@@ -72,6 +73,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider('lspilot-diff', LSPilotDiffProvider.getInstance()),
     vscode.window.registerWebviewViewProvider(LSPilotChatViewProvider.viewType, chatProvider, {
       webviewOptions: {
         retainContextWhenHidden: true

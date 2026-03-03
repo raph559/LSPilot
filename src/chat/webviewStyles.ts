@@ -200,16 +200,62 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     }
     .tool-output-pre {
       margin: 0;
-      padding: 10px;
+      padding: 0;
       border-top: 1px solid var(--border);
       background: var(--user-bg);
       max-height: 250px;
       overflow-y: auto;
     }
     .tool-output-code {
+      display: block;
+      padding: 10px;
       font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 11px;
+      font-size: 12px;
+      line-height: 1.5;
       white-space: pre-wrap;
+      color: var(--muted);
+    }
+    .inline-diff-view {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+      font-size: 12px;
+      line-height: 1.5;
+      background: transparent;
+      padding: 4px 0;
+    }
+    .diff-line {
+      display: flex;
+      width: 100%;
+      user-select: text;
+    }
+    .diff-marker {
+      flex: 0 0 24px;
+      text-align: center;
+      color: var(--muted);
+      opacity: 0.7;
+      user-select: none;
+    }
+    .diff-content {
+      flex: 1;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .diff-added {
+      background-color: var(--vscode-diffEditor-insertedTextBackground, rgba(46, 160, 67, 0.15));
+    }
+    .diff-added .diff-content {
+      color: var(--vscode-diffEditor-insertedTextForeground, inherit);
+    }
+    .diff-removed {
+      background-color: var(--vscode-diffEditor-removedTextBackground, rgba(248, 81, 73, 0.15));
+    }
+    .diff-removed .diff-content {
+      color: var(--vscode-diffEditor-removedTextForeground, inherit);
+    }
+    .diff-unchanged {
+      background-color: transparent;
       color: var(--muted);
     }
     .global-pending-edits {

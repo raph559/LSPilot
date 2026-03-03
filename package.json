@@ -166,11 +166,11 @@
     "vsce": "^2.15.0"
   },
   "dependencies": {
+    "@vscode/codicons": "^0.0.44",
     "diff": "^8.0.3",
     "github-markdown-css": "^5.9.0",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.1",
-    "markdown-it-highlightjs": "^4.3.0",
     "markdown-it-imsize": "^2.0.1"
   }
 }

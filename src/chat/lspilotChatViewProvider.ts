@@ -2,30 +2,32 @@ import * as vscode from "vscode";
 import MarkdownIt from "markdown-it";
 // @ts-ignore
 import markdownItImsize from "markdown-it-imsize";
-// @ts-ignore
-import markdownItHighlightjs from "markdown-it-highlightjs";
 import hljs from "highlight.js";
 
 const md = new MarkdownIt({
   html: true,
   breaks: true,
-  linkify: true
-})
-.use(markdownItImsize)
-.use(markdownItHighlightjs, { 
-  auto: false, 
-  code: true, 
-  inline: false,
-  format: function (code: string, lang: string) {
-    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-    let highlighted = hljs.highlight(code, { language }).value;
+  linkify: true,
+  highlight: function (str, lang) {
+    let highlighted = '';
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        highlighted = hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
+      } catch (__) {
+        highlighted = md.utils.escapeHtml(str);
+      }
+    } else {
+      highlighted = md.utils.escapeHtml(str);
+    }
+    
     // Add line numbers
     if (highlighted.endsWith('\n')) {
       highlighted = highlighted.slice(0, -1);
     }
     return '<span class="ln"></span>' + highlighted.replace(/\n/g, '\n<span class="ln"></span>');
   }
-});
+})
+.use(markdownItImsize);
 
 const defaultFence = md.renderer.rules.fence || function (tokens: any[], idx: number, options: any, env: any, self: any) {
   return self.renderToken(tokens, idx, options);
@@ -58,6 +60,7 @@ import { LMStudioClient } from "../client/lmStudioClient";
 import type { ChatContextUsage, ChatHistoryMessage, ChatTokenUsage } from "../types";
 import { createChatWebviewHtml } from "./webviewHtml";
 import { toolsDefinition, executeTool } from "./tools";
+import { LSPilotDiffProvider } from "./lspilotDiffProvider";
 
 export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "lspilot.chatView";
@@ -184,6 +187,24 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
       this.postState();
+      return;
+    }
+
+    if (message.type === "showDiff" && typeof message.index === "number") {
+      const msg = this.history[message.index];
+      if (msg && msg.fileEdit) {
+        const edit = msg.fileEdit;
+        const fileName = edit.filePath.split(/[\\/]/).pop() || "file";
+        const id = `edit-${message.index}-${Date.now()}`;
+        
+        LSPilotDiffProvider.getInstance().registerContent(id, edit.oldContent ?? "");
+        
+        const leftUri = vscode.Uri.parse(`lspilot-diff:${id}`);
+        const rightUri = vscode.Uri.file(edit.filePath);
+        const title = `LSPilot: ${fileName} (Original ↔ Edited)`;
+        
+        vscode.commands.executeCommand("vscode.diff", leftUri, rightUri, title);
+      }
       return;
     }
 
@@ -384,24 +405,68 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     const modelLabel = settings.model || "None";
     const contextUsage = this.getEstimatedContextUsage();
 
-    // Parse markdown before sending to webview
-    const renderedMessages = this.history.map((msg) => {
+    // Render markdown lazily to prevent massive CPU overhead on every stream chunk
+    const renderedMessages = this.history.map((msg, index) => {
+      // During active generation, only the last message is changing.
+      // We can safely cache the rendered markdown for all previous messages to prevent lag ("getting completely buggy").
+      const isLastMessage = index === this.history.length - 1;
+      
+      if (!isLastMessage && msg.renderedContent !== undefined) {
+        return msg;
+      }
+
       let renderedContent: string | undefined;
       let renderedThinking: string | undefined;
       try {
-        renderedContent = md.render(msg.content) as string;
+        if (msg.role !== "tool") {
+          renderedContent = md.render(msg.content) as string;
+        } else {
+          if (msg.fileEdit && msg.fileEdit.diffs) {
+            let diffText = "";
+            for (const part of msg.fileEdit.diffs) {
+              const prefix = part.added ? "+ " : part.removed ? "- " : "  ";
+              const lines = part.value.split('\n');
+              if (lines[lines.length - 1] === "") lines.pop();
+              for (const line of lines) {
+                diffText += `${prefix}${line}\n`;
+              }
+            }
+            renderedContent = md.render("```diff\n" + diffText + "```") as string;
+          } else {
+            let lang = "plaintext";
+            if (msg.name === "runCommand") lang = "bash";
+            else if (msg.name === "writeFile" || msg.name === "readFile") {
+              try {
+                 const argsObj = JSON.parse(msg.tool_call_id ? this.history.find(m => m.tool_calls?.some((t: any) => t.id === msg.tool_call_id))?.tool_calls?.find((t:any) => t.id === msg.tool_call_id)?.function?.arguments || "{}" : "{}");
+                 if (argsObj.filePath) {
+                    const ext = argsObj.filePath.split('.').pop();
+                    if (ext) lang = ext;
+                 }
+              } catch (e) {}
+            }
+            renderedContent = md.render("```" + lang + "\n" + msg.content + "\n```") as string;
+          }
+        }
         if (msg.thinking) {
           renderedThinking = md.render(msg.thinking) as string;
         }
       } catch (e) {
-        renderedContent = msg.content;
+        if (msg.role !== "tool") {
+          renderedContent = msg.content;
+        } else {
+          try {
+             renderedContent = md.render("```plaintext\n" + msg.content + "\n```") as string;
+          } catch (e2) {
+             renderedContent = msg.content;
+          }
+        }
         renderedThinking = msg.thinking;
       }
-      return {
-        ...msg,
-        renderedContent,
-        renderedThinking
-      };
+      
+      msg.renderedContent = renderedContent;
+      msg.renderedThinking = renderedThinking;
+
+      return msg;
     });
 
     void this.view.webview.postMessage({

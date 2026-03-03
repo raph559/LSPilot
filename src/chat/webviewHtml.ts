@@ -13,14 +13,16 @@ function getNonce(): string {
 
 export function createChatWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const nonce = getNonce();
+  const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource} 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LSPilot Chat</title>
+  <link href="${codiconsUri}" rel="stylesheet" />
   <style>
 ${getWebviewStyles(extensionUri)}
   </style>

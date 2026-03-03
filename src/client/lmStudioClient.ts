@@ -694,8 +694,8 @@ export class LMStudioClient {
       { role: "system", content: settings.chatSystemPrompt },
       ...contextualHistory.map((message) => {
         const msg: any = { role: message.role };
-        if (message.content) {
-          msg.content = message.content.slice(-6000);
+        if (message.content != null && message.content !== "") {
+          msg.content = message.content.slice(-12000);
         }
         if (message.tool_calls) {
           msg.tool_calls = message.tool_calls;
@@ -892,7 +892,7 @@ export class LMStudioClient {
     body: Record<string, unknown>,
     settings: LSPilotSettings,
     token: vscode.CancellationToken,
-    onUpdate: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void,
+    onUpdate: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }) => void,
     timeoutMs = settings.timeoutMs
   ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const controller = new AbortController();
@@ -1011,10 +1011,15 @@ export class LMStudioClient {
 
         const displayed = mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning);
         const reasoningForEmit = displayed.reasoning ?? "";
-        if (displayed.text !== lastEmittedResponse || reasoningForEmit !== lastEmittedReasoning) {
+        
+        const toolCallsForEmit = accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined;
+        let toolsChanged = false;
+        if (delta.tool_calls && delta.tool_calls.length > 0) toolsChanged = true;
+
+        if (displayed.text !== lastEmittedResponse || reasoningForEmit !== lastEmittedReasoning || toolsChanged) {
           lastEmittedResponse = displayed.text;
           lastEmittedReasoning = reasoningForEmit;
-          onUpdate({ response: displayed.text, reasoning: displayed.reasoning, usage: lastUsage });
+          onUpdate({ response: displayed.text, reasoning: displayed.reasoning, usage: lastUsage, tool_calls: toolCallsForEmit });
         }
       }
       

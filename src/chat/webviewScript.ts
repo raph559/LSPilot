@@ -13,6 +13,8 @@ export const chatWebviewScript = `
 
     let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, messages: [], contextUsage: undefined };
     let timerInterval = null;
+    let promptHistory = [];
+    let promptHistoryIndex = -1;
 
     function formatTime(ms) {
       if (!ms || ms < 0) return "0.0s";
@@ -116,7 +118,7 @@ export const chatWebviewScript = `
           const summary = document.createElement("summary");
           summary.className = "tool-summary";
 
-          const iconSvg = '<svg style="width:14px;height:14px;vertical-align:text-bottom;margin-right:4px;" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 1h11l.5.5v13l-.5.5h-11l-.5-.5v-13l.5-.5zM2 2v12h12V2H2zm3.85 4.15L8.7 8l-2.85 1.85-.7-.7L7.3 8 5.15 6.85l.7-.7zM11 10H8v1h3v-1z"></path></svg>';
+          const iconSvg = '<i class="codicon codicon-symbol-misc" style="margin-right: 6px; font-size: 14px; vertical-align: text-bottom;"></i>';
           
           const nameSpan = document.createElement("span");
           if (message.toolSummary) {
@@ -128,13 +130,10 @@ export const chatWebviewScript = `
           summary.appendChild(nameSpan);
           details.appendChild(summary);
 
-          const pre = document.createElement("pre");
-          pre.className = "tool-output-pre";
-          const code = document.createElement("code");
-          code.className = "msg-content tool-output-code"; // msg-content marks it for text upd
-          pre.appendChild(code);
+          const body = document.createElement("div");
+          body.className = "tool-output-body markdown-body msg-content"; 
+          details.appendChild(body);
 
-          details.appendChild(pre);
           card.appendChild(details);
 
           wrapper.appendChild(card);
@@ -144,7 +143,7 @@ export const chatWebviewScript = `
           editActionsEl.style.display = "none";
           wrapper.appendChild(editActionsEl);
 
-          contentEl = code;
+          contentEl = body;
         } else {
           contentEl = document.createElement("div");
           contentEl.className = "msg-content markdown-body";
@@ -165,8 +164,8 @@ export const chatWebviewScript = `
       }
 
       if (message.role === "tool") {
-        if (contentEl.textContent !== targetContentHTML) {
-          contentEl.textContent = targetContentHTML;
+        if (contentEl.innerHTML !== targetContentHTML) {
+          contentEl.innerHTML = targetContentHTML;
         }
 
         const actionsContainer = wrapper.querySelector('.edit-actions-container');
@@ -254,7 +253,7 @@ export const chatWebviewScript = `
         sendBtn.textContent = "Send";
       }
 
-      inputEl.disabled = state.busy || noModel;
+      inputEl.disabled = noModel;
       if (noModel) {
         inputEl.placeholder = "Select a model to start chatting...";
       } else if (state.modelLoading) {
@@ -297,6 +296,9 @@ export const chatWebviewScript = `
         return;
       }
 
+      promptHistory.push(text);
+      promptHistoryIndex = promptHistory.length;
+
       // Auto-resize reset
       inputEl.style.height = 'auto';
       inputEl.value = "";
@@ -317,6 +319,26 @@ export const chatWebviewScript = `
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         sendInput();
+      } else if (event.key === "ArrowUp") {
+        if (promptHistory.length > 0 && promptHistoryIndex > 0) {
+          event.preventDefault();
+          promptHistoryIndex--;
+          inputEl.value = promptHistory[promptHistoryIndex];
+          // Trigger auto-resize
+          inputEl.dispatchEvent(new Event('input'));
+        }
+      } else if (event.key === "ArrowDown") {
+        if (promptHistory.length > 0 && promptHistoryIndex < promptHistory.length) {
+          event.preventDefault();
+          promptHistoryIndex++;
+          if (promptHistoryIndex === promptHistory.length) {
+            inputEl.value = "";
+          } else {
+            inputEl.value = promptHistory[promptHistoryIndex];
+          }
+          // Trigger auto-resize
+          inputEl.dispatchEvent(new Event('input'));
+        }
       }
     });
 
@@ -440,14 +462,16 @@ export const chatWebviewScript = `
         card.className = "global-edit-card";
 
         const fileName = (m.fileEdit.filePath || "").split(/[\\\\/]/).pop();
-        const fileIcon = '<svg style="width:14px;height:14px;vertical-align:text-bottom;margin-right:4px;" viewBox="0 0 16 16" fill="currentColor"><path d="M13.71 4.29l-3-3L10 1H4L3 2v12l1 1h9l1-1V5l-.29-.71zM10 2.41l2.59 2.59H10V2.41zM13 14H4V2h5v4h4v8z"></path></svg>';
+        const fileIcon = '<i class="codicon codicon-file-code" style="margin-right: 6px; font-size: 16px; vertical-align: text-bottom;"></i>';
         
         const additions = m.fileEdit.additions || 0;
         const deletions = m.fileEdit.deletions || 0;
         
         const fileLabel = \`
           <div class="edit-file-name" style="flex:1;">
-            \${fileIcon} \${fileName}
+            <div style="font-size: 1.25em; font-weight: 500; display: inline-flex; align-items: center;">
+              \${fileIcon} <span>\${fileName}</span>
+            </div>
             <span class="diff-stats" style="margin-left: 8px; font-size: 11px;">
               <span style="color: var(--vscode-charts-green, #4caf50);">+\${additions}</span>
               <span style="color: var(--vscode-charts-red, #d64545);">-\${deletions}</span>
@@ -459,10 +483,19 @@ export const chatWebviewScript = `
         const btnGroup = document.createElement("div");
         btnGroup.className = "hover-actions";
 
+        const diffIconBtn = document.createElement("button");
+        diffIconBtn.className = "icon-btn";
+        diffIconBtn.title = "View Diff";
+        diffIconBtn.innerHTML = '<i class="codicon codicon-diff-single" style="font-size: 14px;"></i>';
+        diffIconBtn.onclick = (e) => {
+          e.preventDefault();
+          vscode.postMessage({ type: "showDiff", index: i });
+        };
+        
         const undoIconBtn = document.createElement("button");
         undoIconBtn.className = "icon-btn";
         undoIconBtn.title = "Undo this file";
-        undoIconBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2.146 2.854a.5.5 0 1 1 .708-.708L8 7.293l5.146-5.147a.5.5 0 0 1 .708.708L8.707 8l5.147 5.146a.5.5 0 0 1-.708.708L8 8.707l-5.146 5.147a.5.5 0 0 1-.708-.708L7.293 8 2.146 2.854Z"/></svg>'; 
+        undoIconBtn.innerHTML = '<i class="codicon codicon-discard" style="font-size: 14px;"></i>'; 
         undoIconBtn.onclick = (e) => { 
           e.preventDefault(); 
           vscode.postMessage({ type: "undoEdit", index: i }); 
@@ -471,16 +504,29 @@ export const chatWebviewScript = `
         const keepIconBtn = document.createElement("button");
         keepIconBtn.className = "icon-btn";
         keepIconBtn.title = "Keep this file";
-        keepIconBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"/></svg>';
+        keepIconBtn.innerHTML = '<i class="codicon codicon-check" style="font-size: 14px;"></i>';
         keepIconBtn.onclick = (e) => { 
           e.preventDefault(); 
           vscode.postMessage({ type: "keepEdit", index: i }); 
         };
 
+        btnGroup.appendChild(diffIconBtn);
         btnGroup.appendChild(undoIconBtn);
         btnGroup.appendChild(keepIconBtn);
 
         card.innerHTML = fileLabel;
+        
+        // Add click to diff
+        const fileNameEl = card.querySelector('.edit-file-name');
+        if (fileNameEl) {
+          fileNameEl.style.cursor = 'pointer';
+          fileNameEl.title = 'View Diff';
+          fileNameEl.onclick = (e) => {
+            e.preventDefault();
+            vscode.postMessage({ type: 'showDiff', index: i });
+          };
+        }
+
         card.appendChild(btnGroup);
         
         listContainer.appendChild(card);

@@ -86,6 +86,7 @@ export interface ToolResult {
     newContent: string;
     additions?: number;
     deletions?: number;
+    diffs?: Array<{ added?: boolean; removed?: boolean; value: string; count?: number }>;
   };
 }
 
@@ -119,11 +120,13 @@ export async function executeTool(name: string, argsString: string): Promise<Too
         
         let additions = 0;
         let deletions = 0;
+        let diffs: any[] | undefined;
         if (oldContent === null) {
           additions = args.content.split('\n').length;
+          diffs = [{ added: true, value: args.content }];
         } else {
-          const changes = diff.diffLines(oldContent, args.content);
-          for (const change of changes) {
+          diffs = diff.diffLines(oldContent, args.content);
+          for (const change of diffs) {
             if (change.added) additions += change.count || 0;
             if (change.removed) deletions += change.count || 0;
           }
@@ -136,7 +139,8 @@ export async function executeTool(name: string, argsString: string): Promise<Too
             oldContent: oldContent,
             newContent: args.content,
             additions,
-            deletions
+            deletions,
+            diffs
           }
         };
       }

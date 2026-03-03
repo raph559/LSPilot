@@ -128,6 +128,7 @@ export interface ChatHistoryMessage {
     deletions?: number;
     applied?: boolean;
     discarded?: boolean;
+    diffs?: Array<{ added?: boolean; removed?: boolean; value: string; count?: number }>;
   };
 }
 
