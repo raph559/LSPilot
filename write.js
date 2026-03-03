@@ -1,4 +1,5 @@
-import * as vscode from "vscode";
+const fs = require("fs");
+const content = `import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -19,12 +20,12 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
         console.error("Failed to load markdown/highlight css", e);
     }
 
-    return `
-    ${mdCss}
+    return \\\`
+    \${mdCss}
     
     /* VS Code Theme aware highlight.js mapping */
-    body.vscode-light .hljs { ${vsCss} }
-    body.vscode-dark .hljs, body.vscode-high-contrast .hljs { ${vs2015Css} }
+    body.vscode-light .hljs { \${vsCss} }
+    body.vscode-dark .hljs, body.vscode-high-contrast .hljs { \${vs2015Css} }
 
     :root {
       --bg: var(--vscode-editor-background);
@@ -171,13 +172,6 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
         font-size: 13px !important;
     }
     
-    .markdown-body pre,
-    .markdown-body code,
-    .markdown-body pre code {
-      font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace) !important;
-      font-size: var(--vscode-editor-font-size, 13px) !important;
-    }
-    
     .markdown-body pre {
       padding: 10px 0;
       overflow-x: auto;
@@ -185,6 +179,10 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       background-color: transparent !important;
     }
 
+    .markdown-body code {
+      font-family: var(--vscode-editor-font-family, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace) !important;
+    }
+    
     .markdown-body pre code {
       padding: 0 10px;
       display: block;
@@ -273,7 +271,7 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     }
     details.thinking summary::-webkit-details-marker { display: none; }
     details.thinking summary::before {
-      content: "\\25B6";
+      content: "\\\\25B6";
       font-size: 10px;
       opacity: 0.7;
       transition: transform 0.2s ease;
@@ -364,5 +362,6 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       color: var(--muted) !important;
       border-left-color: var(--vscode-textBlockQuote-border) !important;
     }
-    `;
+    \\\`;
 }
+`; fs.writeFileSync("script.js", content);

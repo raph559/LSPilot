@@ -672,6 +672,10 @@ export class LMStudioClient {
   ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
+    
+    // Fetch dynamic context window or use -1 to let LM Studio use all available context
+    const detectedContext = await this.detectModelContextWindowTokens(token);
+    const maxTokensToUse = detectedContext && detectedContext > 0 ? detectedContext : -1;
 
     const contextualHistory = history.slice(-20);
     const messages = [
@@ -688,7 +692,7 @@ export class LMStudioClient {
         {
           model,
           messages,
-          max_tokens: settings.chatMaxTokens,
+          max_tokens: maxTokensToUse,
           temperature: settings.temperature
         },
         settings,
@@ -701,7 +705,7 @@ export class LMStudioClient {
         {
           model,
           messages,
-          max_tokens: settings.chatMaxTokens,
+          max_tokens: maxTokensToUse,
           temperature: settings.temperature
         },
         settings,

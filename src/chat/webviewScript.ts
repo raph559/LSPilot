@@ -10,7 +10,7 @@ export const chatWebviewScript = `
     const contextLabelEl = document.getElementById("contextLabel");
     const contextFillEl = document.getElementById("contextFill");
 
-    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", messages: [], contextUsage: undefined };
+    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, messages: [], contextUsage: undefined };
     let timerInterval = null;
 
     function formatTime(ms) {
@@ -66,7 +66,7 @@ export const chatWebviewScript = `
           details.appendChild(summary);
 
           const thinkingBody = document.createElement("div");
-          thinkingBody.className = "thinking-body";
+          thinkingBody.className = "thinking-body markdown-body";
           details.appendChild(thinkingBody);
 
           wrapper.insertBefore(details, wrapper.firstChild);
@@ -86,7 +86,7 @@ export const chatWebviewScript = `
       let contentEl = wrapper.querySelector('.msg-content');
       if (!contentEl) {
         contentEl = document.createElement("div");
-        contentEl.className = "msg-content";
+        contentEl.className = "msg-content markdown-body";
         wrapper.appendChild(contentEl);
       }
       
@@ -135,9 +135,12 @@ export const chatWebviewScript = `
     }
 
     function render() {
-      modelEl.textContent = "Model: " + state.modelLabel;
+      modelEl.textContent = "Model: " + state.modelLabel + (state.modelLoading ? " (Loading...)" : "");
+      const noModel = !state.modelLabel || state.modelLabel === "None";
+
       const usage = state.contextUsage;
       if (usage && typeof usage.usagePercent === "number") {
+        contextEl.classList.remove("hidden");
         const pct = Math.max(0, Math.min(100, Number(usage.usagePercent)));
         const used = Number(usage.totalTokens || 0).toLocaleString();
         const total = Number(usage.contextWindowTokens || 0).toLocaleString();
@@ -145,12 +148,16 @@ export const chatWebviewScript = `
         contextFillEl.style.clipPath = "inset(0 " + (100 - pct) + "% 0 0)";
         contextEl.title = typeof usage.details === "string" ? usage.details : "";
       } else {
-        contextLabelEl.textContent = "Context unavailable";
-        contextFillEl.style.clipPath = "inset(0 100% 0 0)";
-        contextEl.title = "Context info unavailable. LM Studio did not return runtime context metadata and/or usage.";
+        contextEl.classList.add("hidden");
       }
-      sendBtn.disabled = state.busy;
-      inputEl.disabled = state.busy;
+
+      sendBtn.disabled = state.busy || noModel || state.modelLoading;
+      inputEl.disabled = state.busy || noModel || state.modelLoading;
+      inputEl.placeholder = state.modelLoading 
+        ? "Waiting for model to load..." 
+        : noModel 
+          ? "Select a model to start chatting..." 
+          : "Ask something about your code...";
 
       // Maintain scroll position if at bottom
       const isAtBottom = messagesEl.scrollHeight - messagesEl.clientHeight <= messagesEl.scrollTop + 10;
@@ -206,6 +213,36 @@ export const chatWebviewScript = `
         sendInput();
       }
     });
+
+    // Global copy function for inline onclick handler
+    window.copyCode = function(buttonEl) {
+      const wrapper = buttonEl.closest('.code-block-wrapper');
+      if (!wrapper) return;
+      
+      const clone = wrapper.cloneNode(true);
+      // Remove line numbers before copying
+      const lineNumbers = clone.querySelectorAll('.ln');
+      lineNumbers.forEach(ln => ln.remove());
+      // Get exact code
+      const codeMatches = clone.querySelectorAll('code');
+      let textToCopy = '';
+      if (codeMatches.length > 0) {
+         textToCopy = codeMatches[0].innerText;
+      }
+      
+      // Cleanup extra newlines inserted by the span removal if needed
+      textToCopy = textToCopy.replace(/\\n+/g, '\\n').trim();
+
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        buttonEl.classList.add('success');
+        const originalHtml = buttonEl.innerHTML;
+        buttonEl.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M13.78 4.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06 0L2.22 9.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018L6 10.94l6.72-6.72a.75.75 0 0 1 1.06 0Z"></path></svg>';
+        setTimeout(() => {
+          buttonEl.classList.remove('success');
+          buttonEl.innerHTML = originalHtml;
+        }, 2000);
+      });
+    };
 
     window.addEventListener("message", (event) => {
       const message = event.data;

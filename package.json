@@ -105,9 +105,9 @@
         },
         "lspilot.chatTimeoutMs": {
           "type": "number",
-          "default": 60000,
+          "default": 300000,
           "minimum": 1000,
-          "maximum": 600000,
+          "maximum": 1200000,
           "description": "Timeout in milliseconds for chat responses."
         },
         "lspilot.modelLoadTimeoutMs": {
@@ -133,10 +133,10 @@
         },
         "lspilot.chatMaxTokens": {
           "type": "number",
-          "default": 512,
+          "default": 4096,
           "minimum": 32,
-          "maximum": 4096,
-          "description": "Maximum token budget for chat responses."
+          "maximum": 1048576,
+          "description": "Maximum token budget for chat responses. This should be set according to your model's maximum output limit or context window."
         },
         "lspilot.systemPrompt": {
           "type": "string",
@@ -158,15 +158,17 @@
     "package": "vsce package"
   },
   "devDependencies": {
-    "@types/marked": "^5.0.2",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.88.0",
     "typescript": "^5.4.5",
     "vsce": "^2.15.0"
   },
   "dependencies": {
+    "github-markdown-css": "^5.9.0",
     "highlight.js": "^11.11.1",
-    "marked": "^17.0.3",
-    "marked-highlight": "^2.2.3"
+    "markdown-it": "^14.1.1",
+    "markdown-it-highlightjs": "^4.3.0",
+    "markdown-it-imsize": "^2.0.1"
   }
 }

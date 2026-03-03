@@ -9,7 +9,7 @@ let suppressRestoreUntil = 0;
 export function activate(context: vscode.ExtensionContext): void {
   const client = new LMStudioClient();
   activeClient = client;
-  const chatProvider = new LSPilotChatViewProvider(client);
+  const chatProvider = new LSPilotChatViewProvider(client, context.extensionUri);
   const lastRequestByUri = new Map<string, number>();
   let restoringModel = false;
 

@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { chatWebviewScript } from "./webviewScript";
-import { chatWebviewStyles } from "./webviewStyles";
+import { getWebviewStyles } from "./webviewStyles";
 
 function getNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -11,7 +11,7 @@ function getNonce(): string {
   return value;
 }
 
-export function createChatWebviewHtml(webview: vscode.Webview): string {
+export function createChatWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const nonce = getNonce();
 
   return `<!DOCTYPE html>
@@ -22,7 +22,7 @@ export function createChatWebviewHtml(webview: vscode.Webview): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LSPilot Chat</title>
   <style>
-${chatWebviewStyles}
+${getWebviewStyles(extensionUri)}
   </style>
 </head>
 <body>
@@ -35,7 +35,7 @@ ${chatWebviewStyles}
   </div>
   <div id="messages"></div>
   <div class="composer">
-    <div class="context context-in-composer" id="context" title="Context info unavailable. LM Studio did not return runtime context metadata and/or usage.">
+    <div class="context context-in-composer hidden" id="context" title="Context info unavailable. LM Studio did not return runtime context metadata and/or usage.">
       <div class="context-label" id="contextLabel">Context unavailable</div>
       <div class="context-track">
         <div class="context-fill" id="contextFill"></div>

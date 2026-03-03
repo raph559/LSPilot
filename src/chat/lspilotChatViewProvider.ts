@@ -1,21 +1,58 @@
 import * as vscode from "vscode";
-import { marked } from "marked";
+import MarkdownIt from "markdown-it";
+// @ts-ignore
+import markdownItImsize from "markdown-it-imsize";
+// @ts-ignore
+import markdownItHighlightjs from "markdown-it-highlightjs";
 import hljs from "highlight.js";
-import { markedHighlight } from "marked-highlight";
 
-marked.use({
+const md = new MarkdownIt({
+  html: true,
   breaks: true,
-  gfm: true
+  linkify: true
+})
+.use(markdownItImsize)
+.use(markdownItHighlightjs, { 
+  auto: false, 
+  code: true, 
+  inline: false,
+  format: function (code: string, lang: string) {
+    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+    let highlighted = hljs.highlight(code, { language }).value;
+    // Add line numbers
+    if (highlighted.endsWith('\n')) {
+      highlighted = highlighted.slice(0, -1);
+    }
+    return '<span class="ln"></span>' + highlighted.replace(/\n/g, '\n<span class="ln"></span>');
+  }
 });
 
-marked.use(markedHighlight({
-  emptyLangClass: 'hljs',
-  langPrefix: 'hljs language-',
-  highlight(code, lang) {
-    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-    return hljs.highlight(code, { language }).value;
-  }
-}));
+const defaultFence = md.renderer.rules.fence || function (tokens: any[], idx: number, options: any, env: any, self: any) {
+  return self.renderToken(tokens, idx, options);
+};
+
+md.renderer.rules.fence = function (tokens: any[], idx: number, options: any, env: any, self: any) {
+  const token = tokens[idx];
+  const lang = token.info ? token.info.trim().split(' ')[0] : 'plaintext';
+  const rawHtml = defaultFence(tokens, idx, options, env, self);
+  
+  return `
+    <div class="code-block-wrapper">
+      <div class="code-block-header">
+        <span class="code-block-lang">${lang}</span>
+        <button class="code-block-copy" title="Copy code" onclick="copyCode(this)">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+            <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+            <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="code-block-body">
+        ${rawHtml}
+      </div>
+    </div>
+  `;
+};
 
 import { LMStudioClient } from "../client/lmStudioClient";
 import type { ChatContextUsage, ChatHistoryMessage, ChatTokenUsage } from "../types";
@@ -31,10 +68,11 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private busyStartTimeMs: number | undefined;
   private detectedContextWindowTokens: number | undefined;
   private contextProbeInFlight = false;
+  private modelLoadInProgress = false;
   private previouslyLoadedModel: string | undefined;
   private lastTokenUsage: ChatTokenUsage | undefined;
 
-  public constructor(private readonly client: LMStudioClient) {}
+  public constructor(private readonly client: LMStudioClient, private readonly extensionUri: vscode.Uri) {}
 
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
@@ -43,7 +81,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true
     };
 
-    webviewView.webview.html = createChatWebviewHtml(webviewView.webview);
+    webviewView.webview.html = createChatWebviewHtml(webviewView.webview, this.extensionUri);
 
     webviewView.onDidDispose(() => {
       if (this.view === webviewView) {
@@ -145,6 +183,16 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         assistantMessage.content = chunk.response;
         assistantMessage.thinking = chunk.reasoning;
         assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+
+        try {
+          assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
+          if (assistantMessage.thinking) {
+            assistantMessage.renderedThinking = md.render(assistantMessage.thinking) as string;
+          }
+        } catch {
+          // Fallback handled in postState
+        }
+
         if (chunk.usage) {
           this.lastTokenUsage = chunk.usage;
         }
@@ -153,9 +201,18 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
       const assistantMessage = this.history[assistantIndex];
       if (assistantMessage && assistantMessage.role === "assistant") {
-        assistantMessage.content = result.response || "(empty response)";
+        assistantMessage.content = result.response || (result.reasoning ? "" : "(empty response)");
         assistantMessage.thinking = result.reasoning;
         assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+
+        try {
+          assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
+          if (assistantMessage.thinking) {
+            assistantMessage.renderedThinking = md.render(assistantMessage.thinking) as string;
+          }
+        } catch {
+          // Fallback handled in postState
+        }
       }
       if (result.usage) {
         this.lastTokenUsage = result.usage;
@@ -206,9 +263,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       let renderedContent: string | undefined;
       let renderedThinking: string | undefined;
       try {
-        renderedContent = marked.parse(msg.content) as string;
+        renderedContent = md.render(msg.content) as string;
         if (msg.thinking) {
-          renderedThinking = marked.parse(msg.thinking) as string;
+          renderedThinking = md.render(msg.thinking) as string;
         }
       } catch (e) {
         renderedContent = msg.content;
@@ -226,6 +283,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       busy: this.busy,
       busyStartTimeMs: this.busyStartTimeMs,
       modelLabel,
+      modelLoading: this.modelLoadInProgress,
       messages: renderedMessages,
       contextUsage
     });
@@ -306,10 +364,14 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       if (this.detectedContextWindowTokens !== undefined) {
         this.detectedContextWindowTokens = undefined;
       }
+      if (this.modelLoadInProgress) {
+        this.modelLoadInProgress = false;
+      }
       return;
     }
 
     this.contextProbeInFlight = true;
+    let stateChanged = false;
     const tokenSource = new vscode.CancellationTokenSource();
     try {
       let detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
@@ -319,23 +381,31 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       // We only do this once per selected model and avoid doing it if a prompt is already running.
       if (!detected && !this.busy && this.previouslyLoadedModel !== settings.model) {
         this.previouslyLoadedModel = settings.model;
+        this.modelLoadInProgress = true;
+        this.postState(); // Update UI to show loading state
         try {
           await this.client.loadModel(settings.model, tokenSource.token);
           detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
         } catch {
           this.previouslyLoadedModel = undefined; // Retry later if it failed
+        } finally {
+          this.modelLoadInProgress = false;
+          stateChanged = true;
         }
       }
 
       if (typeof detected === "number" && detected > 0 && detected !== this.detectedContextWindowTokens) {
         this.detectedContextWindowTokens = detected;
-        this.postState();
+        stateChanged = true;
       }
     } catch {
       // Best effort only.
     } finally {
       tokenSource.dispose();
       this.contextProbeInFlight = false;
+      if (stateChanged) {
+        this.postState();
+      }
     }
   }
 }
