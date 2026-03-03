@@ -366,15 +366,12 @@ function extractRuntimeContextWindowFromRecord(raw: unknown): number | undefined
   }
 
   const record = raw as Record<string, unknown>;
-  // Prefer runtime/loaded context keys, not theoretical model maxima.
   const directKeys = [
-    "context_length",
+    "loaded_context_length",
+    "runtime_context_length",
     "n_ctx",
     "ctx_size",
-    "runtime_context_length",
-    "loaded_context_length",
-    "context_window",
-    "max_context_length"
+    "context_length"          // Found inside loaded_instances[].config
   ];
   for (const key of directKeys) {
     const value = extractPositiveNumber(record, key);
@@ -401,6 +398,7 @@ export class LMStudioClient {
   private cachedModel: string | undefined;
   private modelCacheTimestamp = 0;
   private readonly modelCacheTtlMs = 60_000;
+  private modelLoadPromises = new Map<string, Promise<void>>();
 
   public getSettings(): LSPilotSettings {
     const config = vscode.workspace.getConfiguration("lspilot");
@@ -461,6 +459,20 @@ export class LMStudioClient {
   }
 
   public async loadModel(model: string, token: vscode.CancellationToken): Promise<void> {
+    const existing = this.modelLoadPromises.get(model);
+    if (existing) {
+      return existing;
+    }
+    const promise = this.doLoadModel(model, token).finally(() => {
+      if (this.modelLoadPromises.get(model) === promise) {
+        this.modelLoadPromises.delete(model);
+      }
+    });
+    this.modelLoadPromises.set(model, promise);
+    return promise;
+  }
+
+  private async doLoadModel(model: string, token: vscode.CancellationToken): Promise<void> {
     const settings = this.getSettings();
     const nativeApiBase = this.getNativeApiBase(settings.baseUrl);
     const controller = new AbortController();

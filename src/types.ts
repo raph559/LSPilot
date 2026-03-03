@@ -74,6 +74,7 @@ export interface ChatHistoryMessage {
   role: "user" | "assistant";
   content: string;
   thinking?: string;
+  generationTimeMs?: number;
 }
 
 export interface ChatContextUsage {

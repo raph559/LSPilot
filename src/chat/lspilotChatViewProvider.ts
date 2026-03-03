@@ -10,8 +10,10 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private history: ChatHistoryMessage[] = [];
   private busy = false;
   private activeRequest: vscode.CancellationTokenSource | undefined;
+  private busyStartTimeMs: number | undefined;
   private detectedContextWindowTokens: number | undefined;
   private contextProbeInFlight = false;
+  private previouslyLoadedModel: string | undefined;
   private lastTokenUsage: ChatTokenUsage | undefined;
 
   public constructor(private readonly client: LMStudioClient) {}
@@ -47,6 +49,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRequest?.cancel();
     this.activeRequest?.dispose();
     this.activeRequest = undefined;
+    this.busyStartTimeMs = undefined;
     this.busy = false;
     this.history = [];
     this.lastTokenUsage = undefined;
@@ -102,6 +105,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.history.push({ role: "assistant", content: "" });
 
     this.busy = true;
+    const startTimeMs = Date.now();
+    this.busyStartTimeMs = startTimeMs;
     this.postState();
 
     const tokenSource = new vscode.CancellationTokenSource();
@@ -121,7 +126,10 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
         assistantMessage.content = chunk.response;
         assistantMessage.thinking = chunk.reasoning;
-        this.lastTokenUsage = chunk.usage;
+        assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+        if (chunk.usage) {
+          this.lastTokenUsage = chunk.usage;
+        }
         this.postState();
       });
 
@@ -129,8 +137,11 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       if (assistantMessage && assistantMessage.role === "assistant") {
         assistantMessage.content = result.response || "(empty response)";
         assistantMessage.thinking = result.reasoning;
+        assistantMessage.generationTimeMs = Date.now() - startTimeMs;
       }
-      this.lastTokenUsage = result.usage;
+      if (result.usage) {
+        this.lastTokenUsage = result.usage;
+      }
 
       this.history = this.history.slice(-30);
     } catch (error) {
@@ -140,10 +151,12 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       if (assistantMessage && assistantMessage.role === "assistant") {
         assistantMessage.content = `Error: ${message}`;
         assistantMessage.thinking = undefined;
+        assistantMessage.generationTimeMs = Date.now() - startTimeMs;
       } else {
         this.history.push({
           role: "assistant",
-          content: `Error: ${message}`
+          content: `Error: ${message}`,
+          generationTimeMs: Date.now() - startTimeMs
         });
       }
 
@@ -151,6 +164,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     } finally {
       if (this.activeRequest === tokenSource) {
         this.activeRequest = undefined;
+        this.busyStartTimeMs = undefined;
       }
       tokenSource.dispose();
       this.busy = false;
@@ -172,6 +186,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     void this.view.webview.postMessage({
       type: "state",
       busy: this.busy,
+      busyStartTimeMs: this.busyStartTimeMs,
       modelLabel,
       messages: this.history,
       contextUsage
@@ -183,23 +198,59 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     if (!contextWindowTokens || contextWindowTokens <= 0) {
       return undefined;
     }
-    const usage = this.lastTokenUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    const usageRatio = Math.min(1, usage.totalTokens / contextWindowTokens);
+
+    let promptTokens = this.lastTokenUsage?.promptTokens || 0;
+    let completionTokens = this.lastTokenUsage?.completionTokens || 0;
+    let totalTokens = this.lastTokenUsage?.totalTokens || 0;
+
+    // During generation, dynamically estimate newly added tokens so the progress bar updates in real time
+    if (this.busy && this.history.length > 0 && !this.lastTokenUsage?.totalTokens) {
+      // Small safety check: if lastTokenUsage was already populated by the stream (some models send it early), don't double count.
+      // But typically we don't get chunk.usage until the end. We'll track if we need to fake it:
+    }
+    
+    // Better logic: if we are busy, and the current token usage hasn't been emitted by the stream yet for this run
+    // Actually, `this.lastTokenUsage` is from the *previous* request until overwritten. 
+    // We can just add the estimation unconditionally until we receive a new chunk.usage.
+    // Wait, chunk.usage sets this.lastTokenUsage. So if it is set, we still add to it? 
+    // No, if chunk.usage is emitted during stream (rare, usually at the end), we don't want to add previous + new.
+    // But since `chunk.usage` contains the real prompt + completion, if we just use the length of the string, we get a nice fallback.
+
+    if (this.busy && this.history.length > 0) {
+      const lastMsg = this.history[this.history.length - 1];
+      if (lastMsg.role === "assistant") {
+        const currentLen = (lastMsg.content?.length || 0) + (lastMsg.thinking?.length || 0);
+        let extraUserLen = 0;
+        if (this.history.length >= 2) {
+          const preMsg = this.history[this.history.length - 2];
+          if (preMsg.role === "user") {
+            extraUserLen = preMsg.content?.length || 0;
+          }
+        }
+        
+        // Approx 3.5 chars per token for typical LLMs
+        const estimatedNewTokens = Math.floor((currentLen + extraUserLen) / 3.5);
+        totalTokens += estimatedNewTokens;
+        completionTokens = (this.lastTokenUsage?.completionTokens || 0) + Math.floor(currentLen / 3.5);
+      }
+    }
+
+    const usageRatio = Math.min(1, totalTokens / contextWindowTokens);
     const usagePercent = Math.round(usageRatio * 1000) / 10;
-    const remaining = contextWindowTokens - usage.totalTokens;
+    const remaining = contextWindowTokens - totalTokens;
     const detailLines = [
-      `Prompt: ${usage.promptTokens.toLocaleString()} tokens (LM Studio API)`,
-      `Completion: ${usage.completionTokens.toLocaleString()} tokens (LM Studio API)`,
-      `Total: ${usage.totalTokens.toLocaleString()} / ${contextWindowTokens.toLocaleString()} tokens (${usagePercent.toFixed(1)}%)`,
+      this.busy ? `Prompt: ~${promptTokens.toLocaleString()} tokens (Estimating...)` : `Prompt: ${promptTokens.toLocaleString()} tokens (LM Studio API)`,
+      this.busy ? `Completion: ~${completionTokens.toLocaleString()} tokens` : `Completion: ${completionTokens.toLocaleString()} tokens (LM Studio API)`,
+      `Total: ${this.busy ? '~' : ''}${totalTokens.toLocaleString()} / ${contextWindowTokens.toLocaleString()} tokens (${usagePercent.toFixed(1)}%)`,
       remaining >= 0
         ? `Remaining: ${remaining.toLocaleString()} tokens`
         : `Overflow: ${Math.abs(remaining).toLocaleString()} tokens`
     ];
 
     return {
-      promptTokens: usage.promptTokens,
-      completionTokens: usage.completionTokens,
-      totalTokens: usage.totalTokens,
+      promptTokens,
+      completionTokens,
+      totalTokens,
       contextWindowTokens,
       usageRatio,
       usagePercent,
@@ -223,7 +274,21 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.contextProbeInFlight = true;
     const tokenSource = new vscode.CancellationTokenSource();
     try {
-      const detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
+      let detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
+
+      // If no runtime context is detected, it usually means the model isn't active in VRAM yet.
+      // Eagerly loading it ensures we can fetch the exact n_ctx constraint for the progress bar.
+      // We only do this once per selected model and avoid doing it if a prompt is already running.
+      if (!detected && !this.busy && this.previouslyLoadedModel !== settings.model) {
+        this.previouslyLoadedModel = settings.model;
+        try {
+          await this.client.loadModel(settings.model, tokenSource.token);
+          detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
+        } catch {
+          this.previouslyLoadedModel = undefined; // Retry later if it failed
+        }
+      }
+
       if (typeof detected === "number" && detected > 0 && detected !== this.detectedContextWindowTokens) {
         this.detectedContextWindowTokens = detected;
         this.postState();

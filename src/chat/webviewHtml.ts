@@ -29,8 +29,8 @@ ${chatWebviewStyles}
   <div class="toolbar">
     <div class="model" id="model">Model: None</div>
     <div class="actions">
-      <button id="selectModel">Select Model</button>
-      <button id="clear">Clear</button>
+      <button id="selectModel" class="secondary">Select Model</button>
+      <button id="clear" class="secondary">Clear</button>
     </div>
   </div>
   <div id="messages"></div>
@@ -41,10 +41,12 @@ ${chatWebviewStyles}
         <div class="context-fill" id="contextFill"></div>
       </div>
     </div>
-    <textarea id="input" placeholder="Ask something about your code..."></textarea>
-    <div class="send-row">
-      <span class="hint">Enter to send, Shift+Enter for newline</span>
-      <button id="send">Send</button>
+    <div class="input-wrapper">
+      <textarea id="input" placeholder="Ask something about your code..."></textarea>
+      <div class="send-row">
+        <span class="hint">Enter to send, Shift+Enter for newline</span>
+        <button id="send">Send</button>
+      </div>
     </div>
   </div>
   <script nonce="${nonce}">

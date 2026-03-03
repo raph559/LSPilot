@@ -64,20 +64,6 @@
         }
       ]
     },
-    "menus": {
-      "view/title": [
-        {
-          "command": "lspilot.selectModel",
-          "when": "view == lspilot.chatView",
-          "group": "navigation@1"
-        },
-        {
-          "command": "lspilot.clearChat",
-          "when": "view == lspilot.chatView",
-          "group": "navigation@2"
-        }
-      ]
-    },
     "configuration": {
       "title": "LSPilot",
       "properties": {
