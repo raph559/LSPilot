@@ -6,6 +6,7 @@ import type {
   LMStudioMessage,
   LSPilotSettings,
   ModelsResponse,
+  NativeChatResponse,
   NativeModelEntry,
   NativeModelsResponse
 } from "../types";
@@ -46,7 +47,7 @@ function getErrorCode(error: unknown): string | undefined {
 function formatLMStudioRequestError(
   error: unknown,
   settings: LSPilotSettings,
-  endpoint: "/models" | "/chat/completions" | "/api/v1/models/load" | "/api/v1/models/unload",
+  endpoint: "/models" | "/chat/completions" | "/api/v1/chat" | "/api/v1/models/load" | "/api/v1/models/unload",
   timeoutSettingKey?: "lspilot.timeoutMs" | "lspilot.chatTimeoutMs" | "lspilot.modelLoadTimeoutMs"
 ): string {
   const targetUrl = `${settings.baseUrl}${endpoint}`;
@@ -206,6 +207,58 @@ function extractTokenUsage(response: ChatCompletionResponse): ChatTokenUsage | u
   };
 }
 
+function extractNativeChatOutput(response: NativeChatResponse): { text: string; reasoning?: string } {
+  const output = Array.isArray(response.output) ? response.output : [];
+  let text = "";
+  let reasoning = "";
+
+  for (const item of output) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const type = typeof item.type === "string" ? item.type : "";
+    const content = typeof item.content === "string" ? item.content : "";
+    if (!content) {
+      continue;
+    }
+
+    if (type === "reasoning") {
+      reasoning += content;
+      continue;
+    }
+
+    if (type === "message") {
+      text += content;
+    }
+  }
+
+  return {
+    text: text.trim(),
+    reasoning: reasoning.trim() || undefined
+  };
+}
+
+function extractNativeUsage(response: NativeChatResponse): ChatTokenUsage | undefined {
+  const stats = response.stats;
+  if (!stats) {
+    return undefined;
+  }
+
+  const promptTokens = typeof stats.input_tokens === "number" ? Math.max(0, stats.input_tokens) : 0;
+  const completionTokens = typeof stats.total_output_tokens === "number" ? Math.max(0, stats.total_output_tokens) : 0;
+  const totalTokens = Math.max(0, promptTokens + completionTokens);
+
+  if (promptTokens === 0 && completionTokens === 0) {
+    return undefined;
+  }
+
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens
+  };
+}
+
 function extractDeltaText(delta: unknown): { content: string; reasoning: string } {
   if (!delta || typeof delta !== "object") {
     return { content: "", reasoning: "" };
@@ -314,7 +367,8 @@ function extractRuntimeContextWindowFromRecord(raw: unknown): number | undefined
     "ctx_size",
     "runtime_context_length",
     "loaded_context_length",
-    "context_window"
+    "context_window",
+    "max_context_length"
   ];
   for (const key of directKeys) {
     const value = extractPositiveNumber(record, key);
@@ -323,7 +377,7 @@ function extractRuntimeContextWindowFromRecord(raw: unknown): number | undefined
     }
   }
 
-  const nestedKeys = ["metadata", "model_info", "info"];
+  const nestedKeys = ["metadata", "model_info", "info", "config"];
   for (const nestedKey of nestedKeys) {
     const nested = record[nestedKey];
     if (nested && typeof nested === "object") {
@@ -614,25 +668,44 @@ export class LMStudioClient {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
 
-    const contextualHistory = history.slice(-20).map((message) => ({
-      role: message.role,
-      content: message.content.slice(-6000)
-    }));
+    const contextualHistory = history.slice(-20);
+    const messages = [
+      { role: "system", content: settings.chatSystemPrompt },
+      ...contextualHistory.map((message) => ({
+        role: message.role,
+        content: message.content.slice(-6000)
+      }))
+    ];
 
-    const messages: LMStudioMessage[] = [{ role: "system", content: settings.chatSystemPrompt }, ...contextualHistory];
+    let result;
+    if (onUpdate) {
+      result = await this.chatCompletionStream(
+        {
+          model,
+          messages,
+          max_tokens: settings.chatMaxTokens,
+          temperature: settings.temperature
+        },
+        settings,
+        token,
+        onUpdate,
+        settings.chatTimeoutMs
+      );
+    } else {
+      result = await this.chatCompletion(
+        {
+          model,
+          messages,
+          max_tokens: settings.chatMaxTokens,
+          temperature: settings.temperature
+        },
+        settings,
+        token,
+        settings.chatTimeoutMs
+      );
+    }
 
-    const requestBody = {
-      model,
-      messages,
-      temperature: settings.temperature,
-      max_tokens: settings.chatMaxTokens
-    };
-
-    const raw = onUpdate
-      ? await this.chatCompletionStream(requestBody, settings, token, onUpdate, settings.chatTimeoutMs)
-      : await this.chatCompletion({ ...requestBody, stream: false }, settings, token, settings.chatTimeoutMs);
-
-    return { model, response: raw.text.trim(), reasoning: raw.reasoning, usage: raw.usage };
+    return { model, response: result.text.trim(), reasoning: result.reasoning, usage: result.usage };
   }
 
   private async resolveModel(settings: LSPilotSettings): Promise<string> {
@@ -758,7 +831,7 @@ export class LMStudioClient {
         response = await fetch(`${settings.baseUrl}/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...body, stream: true }),
+          body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }),
           signal: controller.signal
         });
       } catch (error) {
@@ -857,6 +930,43 @@ export class LMStudioClient {
       }
 
       return { ...mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning), usage: lastUsage };
+    } finally {
+      clearTimeout(timeout);
+      cancelListener.dispose();
+    }
+  }
+
+  private async nativeChat(
+    body: Record<string, unknown>,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken,
+    timeoutMs = settings.chatTimeoutMs
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage }> {
+    const nativeApiBase = this.getNativeApiBase(settings.baseUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelListener = token.onCancellationRequested(() => controller.abort());
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`${nativeApiBase}/api/v1/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+      } catch (error) {
+        throw new Error(formatLMStudioRequestError(error, settings, "/api/v1/chat", "lspilot.chatTimeoutMs"));
+      }
+
+      const json = (await response.json()) as NativeChatResponse;
+      if (!response.ok) {
+        throw new Error(json.error?.message || `LM Studio native chat failed (${response.status})`);
+      }
+
+      const parsed = extractNativeChatOutput(json);
+      return { ...parsed, usage: extractNativeUsage(json) };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();

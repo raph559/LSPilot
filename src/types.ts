@@ -33,6 +33,22 @@ export interface ChatCompletionResponse {
   };
 }
 
+export interface NativeChatResponse {
+  model_instance_id?: string;
+  output?: Array<{
+    type?: string;
+    content?: string;
+  }>;
+  stats?: {
+    input_tokens?: number;
+    total_output_tokens?: number;
+    reasoning_output_tokens?: number;
+  };
+  error?: {
+    message?: string;
+  };
+}
+
 export interface ModelsResponse {
   data?: Array<{ id?: string }>;
 }

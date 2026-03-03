@@ -180,10 +180,10 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
   private getEstimatedContextUsage(): ChatContextUsage | undefined {
     const contextWindowTokens = this.detectedContextWindowTokens;
-    const usage = this.lastTokenUsage;
-    if (!contextWindowTokens || contextWindowTokens <= 0 || !usage) {
+    if (!contextWindowTokens || contextWindowTokens <= 0) {
       return undefined;
     }
+    const usage = this.lastTokenUsage || { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const usageRatio = Math.min(1, usage.totalTokens / contextWindowTokens);
     const usagePercent = Math.round(usageRatio * 1000) / 10;
     const remaining = contextWindowTokens - usage.totalTokens;
