@@ -3,6 +3,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { promisify } from 'util';
+import * as diff from 'diff';
 
 const execAsync = promisify(cp.exec);
 
@@ -77,12 +78,23 @@ function resolvePath(filePath: string): string {
   return path.join(workspaceFolders[0].uri.fsPath, filePath);
 }
 
-export async function executeTool(name: string, argsString: string): Promise<string> {
+export interface ToolResult {
+  text: string;
+  fileEdit?: {
+    filePath: string;
+    oldContent: string | null;
+    newContent: string;
+    additions?: number;
+    deletions?: number;
+  };
+}
+
+export async function executeTool(name: string, argsString: string): Promise<ToolResult> {
   let args;
   try {
     args = JSON.parse(argsString);
   } catch (e) {
-    return `Error: Invalid JSON arguments: ${argsString}`;
+    return { text: `Error: Invalid JSON arguments: ${argsString}` };
   }
 
   try {
@@ -90,17 +102,48 @@ export async function executeTool(name: string, argsString: string): Promise<str
       case "readFile": {
         const fullPath = resolvePath(args.filePath);
         const data = await fs.readFile(fullPath, 'utf8');
-        return data;
+        return { text: data };
       }
       case "writeFile": {
         const fullPath = resolvePath(args.filePath);
+        let oldContent: string | null = null;
+        try {
+          oldContent = await fs.readFile(fullPath, 'utf8');
+        } catch (err: any) {
+          // If file doesn't exist, it's fine, we will create it
+          if (err.code !== 'ENOENT') {
+            throw err;
+          }
+        }
         await fs.writeFile(fullPath, args.content, 'utf8');
-        return `Successfully wrote to ${args.filePath}`;
+        
+        let additions = 0;
+        let deletions = 0;
+        if (oldContent === null) {
+          additions = args.content.split('\n').length;
+        } else {
+          const changes = diff.diffLines(oldContent, args.content);
+          for (const change of changes) {
+            if (change.added) additions += change.count || 0;
+            if (change.removed) deletions += change.count || 0;
+          }
+        }
+
+        return { 
+          text: `Successfully wrote to ${args.filePath}`,
+          fileEdit: {
+            filePath: fullPath,
+            oldContent: oldContent,
+            newContent: args.content,
+            additions,
+            deletions
+          }
+        };
       }
       case "listDirectory": {
         const fullPath = resolvePath(args.dirPath);
         const files = await fs.readdir(fullPath);
-        return files.join('\n');
+        return { text: files.join('\n') };
       }
       case "runCommand": {
         const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -109,12 +152,12 @@ export async function executeTool(name: string, argsString: string): Promise<str
           cwd = workspaceFolders[0].uri.fsPath;
         }
         const { stdout, stderr } = await execAsync(args.command, { cwd });
-        return (stdout ? stdout.toString() : "") + (stderr ? "\nSTDERR:\n" + stderr.toString() : "");
+        return { text: (stdout ? stdout.toString() : "") + (stderr ? "\nSTDERR:\n" + stderr.toString() : "") };
       }
       default:
-        return `Error: Unknown tool ${name}`;
+        return { text: `Error: Unknown tool ${name}` };
     }
   } catch (error: any) {
-    return `Error executing ${name}: ${error.message}`;
+    return { text: `Error executing ${name}: ${error.message}` };
   }
 }

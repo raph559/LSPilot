@@ -104,6 +104,7 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     .button-group { display: flex; gap: 8px; }
     .hidden { display: none !important; }
     button {
+      font-family: inherit;
       border: 1px solid transparent;
       background: var(--btn-bg);
       color: var(--btn-fg);
@@ -173,11 +174,15 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       border: none;
       margin-left: 8px;
     }
-    .tool-details {
+    .tool-card {
       margin-top: 4px;
       border: 1px solid var(--border);
       border-radius: 4px;
       background: var(--bg);
+      overflow: hidden;
+    }
+    .tool-details {
+      /* now part of tool-card */
     }
     .tool-summary {
       cursor: pointer;
@@ -206,6 +211,129 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       font-size: 11px;
       white-space: pre-wrap;
       color: var(--muted);
+    }
+    .global-pending-edits {
+      margin: 0 0 8px 0;
+      padding: 0;
+      width: 100%;
+    }
+    .global-edits-dropdown {
+      background: transparent;
+      width: 100%;
+    }
+    .global-edits-summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 4px 0;
+      font-size: 12px;
+      user-select: none;
+      background: transparent;
+      border-bottom: 1px solid transparent;
+      transition: opacity 0.2s;
+    }
+    .global-edits-summary:hover {
+      opacity: 0.8;
+    }
+    .global-edits-dropdown[open] .global-edits-summary {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+      margin-bottom: 4px;
+    }
+    .global-edits-summary::-webkit-details-marker { display: none; }
+    .global-edits-dropdown[open] .chevron { transform: rotate(90deg); }
+    
+    .global-edits-list {
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .global-edit-card {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border: 1px solid transparent;
+      border-radius: var(--border-radius);
+      background: transparent;
+      position: relative;
+    }
+    .global-edit-card:hover {
+      background: var(--vscode-list-hoverBackground, rgba(90, 93, 94, 0.31));
+      border-color: var(--border);
+    }
+    .hover-actions {
+      display: none;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
+    }
+    .global-edit-card:hover .hover-actions {
+      display: flex;
+    }
+    .icon-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+    }
+    .icon-btn:hover {
+      background: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent));
+      color: var(--vscode-editor-foreground);
+    }
+    
+    .edit-actions-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--assistant-bg);
+    }
+    .edit-file-name {
+      font-family: inherit;
+      font-size: 11px;
+      color: var(--fg);
+      display: flex;
+      align-items: center;
+    }
+    .edit-actions-buttons {
+      display: flex;
+      gap: 6px;
+    }
+    .edit-status {
+      font-size: 11px;
+      color: var(--muted);
+      padding: 4px 0;
+    }
+    .tool-action-btn {
+      padding: 4px 10px;
+      font-size: 11px;
+      border-radius: 3px;
+      cursor: pointer;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: 1px solid transparent;
+    }
+    .tool-action-btn:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .tool-action-btn.secondary {
+      background: var(--user-bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    .tool-action-btn.secondary:hover {
+      background: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--vscode-focusBorder) 30%, transparent));
     }
     .markdown-body {
         background-color: transparent !important;

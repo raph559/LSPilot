@@ -35,6 +35,7 @@ ${getWebviewStyles(extensionUri)}
   </div>
   <div id="messages"></div>
   <div class="composer">
+    <div id="globalPendingEdits" class="global-pending-edits"></div>
     <div class="context context-in-composer hidden" id="context" title="Context info unavailable. LM Studio did not return runtime context metadata and/or usage.">
       <div class="context-label" id="contextLabel">Context unavailable</div>
       <div class="context-track">

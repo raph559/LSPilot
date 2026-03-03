@@ -118,7 +118,17 @@ export interface ChatHistoryMessage {
     };
   }>;
   name?: string;
+  toolSummary?: string;
   tool_call_id?: string;
+  fileEdit?: {
+    filePath: string;
+    oldContent: string | null;
+    newContent: string;
+    additions?: number;
+    deletions?: number;
+    applied?: boolean;
+    discarded?: boolean;
+  };
 }
 
 export interface ChatContextUsage {

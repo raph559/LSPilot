@@ -158,6 +158,7 @@
     "package": "vsce package"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.19.35",
     "@types/vscode": "^1.109.0",
@@ -165,6 +166,7 @@
     "vsce": "^2.15.0"
   },
   "dependencies": {
+    "diff": "^8.0.3",
     "github-markdown-css": "^5.9.0",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.1",

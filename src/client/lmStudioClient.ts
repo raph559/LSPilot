@@ -678,7 +678,18 @@ export class LMStudioClient {
     const detectedContext = await this.detectModelContextWindowTokens(token);
     const maxTokensToUse = detectedContext && detectedContext > 0 ? detectedContext : -1;
 
-    const contextualHistory = history.slice(-20);
+    let contextualHistory = history.slice(-20);
+    
+    // Ensure at least one user message is present to satisfy LM Studio jinja templates
+    if (!contextualHistory.some(m => m.role === "user")) {
+      const lastUser = [...history].reverse().find(m => m.role === "user");
+      if (lastUser) {
+        contextualHistory = [lastUser, ...contextualHistory];
+      } else {
+        contextualHistory = [{ role: "user", content: "Continue." } as ChatHistoryMessage, ...contextualHistory];
+      }
+    }
+
     const messages = [
       { role: "system", content: settings.chatSystemPrompt },
       ...contextualHistory.map((message) => {

@@ -122,9 +122,67 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const message = rawMessage as { type?: string; text?: unknown };
+    const message = rawMessage as { type?: string; text?: unknown; index?: number };
 
     if (message.type === "ready") {
+      this.postState();
+      return;
+    }
+
+    if (message.type === "keepEdit" && typeof message.index === "number") {
+      const msg = this.history[message.index];
+      if (msg && msg.fileEdit) {
+        msg.fileEdit.applied = true;
+        this.postState();
+      }
+      return;
+    }
+
+    if (message.type === "keepAllEdits") {
+      for (const msg of this.history) {
+        if (msg.role === "tool" && msg.fileEdit && !msg.fileEdit.discarded && !msg.fileEdit.applied) {
+          msg.fileEdit.applied = true;
+        }
+      }
+      this.postState();
+      return;
+    }
+
+    if (message.type === "undoEdit" && typeof message.index === "number") {
+      const msg = this.history[message.index];
+      if (msg && msg.fileEdit) {
+        const edit = msg.fileEdit;
+        try {
+          if (edit.oldContent === null) {
+            await vscode.workspace.fs.delete(vscode.Uri.file(edit.filePath));
+          } else {
+            await vscode.workspace.fs.writeFile(vscode.Uri.file(edit.filePath), Buffer.from(edit.oldContent, 'utf8'));
+          }
+          msg.fileEdit.discarded = true;
+          this.postState();
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`Failed to undo edit: ${e.message}`);
+        }
+      }
+      return;
+    }
+
+    if (message.type === "undoAllEdits") {
+      for (const msg of this.history) {
+        if (msg.role === "tool" && msg.fileEdit && !msg.fileEdit.discarded && !msg.fileEdit.applied) {
+          const edit = msg.fileEdit;
+          try {
+            if (edit.oldContent === null) {
+              await vscode.workspace.fs.delete(vscode.Uri.file(edit.filePath));
+            } else {
+              await vscode.workspace.fs.writeFile(vscode.Uri.file(edit.filePath), Buffer.from(edit.oldContent, 'utf8'));
+            }
+            msg.fileEdit.discarded = true;
+          } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to undo edit: ${e.message}`);
+          }
+        }
+      }
       this.postState();
       return;
     }
@@ -195,7 +253,6 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
           assistantMessage.content = chunk.response;
           assistantMessage.thinking = chunk.reasoning;
-          assistantMessage.generationTimeMs = Date.now() - startTimeMs;
 
           try {
             assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
@@ -238,18 +295,43 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         if (result.tool_calls && result.tool_calls.length > 0 && !tokenSource.token.isCancellationRequested) {
             runNext = true;
             for (const tc of result.tool_calls) {
-               const toolResultText = await executeTool(tc.function.name, tc.function.arguments);
+               const toolResult = await executeTool(tc.function.name, tc.function.arguments);
+               
+               let summaryInfo = tc.function.name;
+               try {
+                 const argsObj = JSON.parse(tc.function.arguments);
+                 if (tc.function.name === "writeFile" || tc.function.name === "readFile") {
+                   const file = (argsObj.filePath || "").split(/[\\/]/).pop();
+                   summaryInfo += ` on <b>${file}</b>`;
+                 } else if (tc.function.name === "runCommand") {
+                   const cmd = argsObj.command || "";
+                   const shortCmd = cmd.length > 20 ? cmd.substring(0, 20) + "..." : cmd;
+                   summaryInfo += ` <code>${shortCmd}</code>`;
+                 } else if (tc.function.name === "listDirectory") {
+                   const dir = (argsObj.dirPath || "").split(/[\\/]/).pop() || '/';
+                   summaryInfo += ` in <b>${dir}</b>`;
+                 }
+               } catch (e) {}
+
                this.history.push({
                    role: "tool",
                    name: tc.function.name,
+                   toolSummary: summaryInfo,
                    tool_call_id: tc.id,
-                   content: toolResultText
+                   content: toolResult.text,
+                   fileEdit: toolResult.fileEdit
                });
             }
             this.history = this.history.slice(-30);
             this.postState();
         } else {
             runNext = false;
+            // Only record generation time once the full logic loop has fully executed and stopped.
+            const firstAssistantMessage = this.history[assistantIndex];
+            if (firstAssistantMessage) {
+                firstAssistantMessage.generationTimeMs = Date.now() - startTimeMs;
+                this.postState(); 
+            }
         }
       }
       this.history = this.history.slice(-30);
