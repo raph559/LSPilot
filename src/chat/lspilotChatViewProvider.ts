@@ -57,6 +57,7 @@ md.renderer.rules.fence = function (tokens: any[], idx: number, options: any, en
 import { LMStudioClient } from "../client/lmStudioClient";
 import type { ChatContextUsage, ChatHistoryMessage, ChatTokenUsage } from "../types";
 import { createChatWebviewHtml } from "./webviewHtml";
+import { toolsDefinition, executeTool } from "./tools";
 
 export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "lspilot.chatView";
@@ -164,72 +165,107 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.history.push({ role: "user", content: trimmed });
     this.history = this.history.slice(-30);
 
-    const requestHistory = [...this.history];
-    this.history.push({ role: "assistant", content: "" });
-
-    this.busy = true;
     const startTimeMs = Date.now();
     this.busyStartTimeMs = startTimeMs;
-    this.postState();
+    this.busy = true;
 
     const tokenSource = new vscode.CancellationTokenSource();
     this.activeRequest = tokenSource;
-    const assistantIndex = this.history.length - 1;
 
     try {
-      const result = await this.client.generateChatResponse(requestHistory, tokenSource.token, (chunk) => {
-        if (this.activeRequest !== tokenSource) {
-          return;
-        }
+      let runNext = true;
+      while (runNext && !tokenSource.token.isCancellationRequested) {
+        runNext = false;
+        
+        const requestHistory = [...this.history];
+        this.history.push({ role: "assistant", content: "" });
+        this.postState();
+
+        const assistantIndex = this.history.length - 1;
+
+        const result = await this.client.generateChatResponse(requestHistory, tokenSource.token, (chunk) => {
+          if (this.activeRequest !== tokenSource) {
+            return;
+          }
+
+          const assistantMessage = this.history[assistantIndex];
+          if (!assistantMessage || assistantMessage.role !== "assistant") {
+            return;
+          }
+
+          assistantMessage.content = chunk.response;
+          assistantMessage.thinking = chunk.reasoning;
+          assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+
+          try {
+            assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
+            if (assistantMessage.thinking) {
+              assistantMessage.renderedThinking = md.render(assistantMessage.thinking) as string;
+            }
+          } catch {
+            // Fallback handled in postState
+          }
+
+          if (chunk.usage) {
+            this.lastTokenUsage = chunk.usage;
+          }
+          this.postState();
+        }, toolsDefinition);
 
         const assistantMessage = this.history[assistantIndex];
-        if (!assistantMessage || assistantMessage.role !== "assistant") {
-          return;
-        }
-
-        assistantMessage.content = chunk.response;
-        assistantMessage.thinking = chunk.reasoning;
-        assistantMessage.generationTimeMs = Date.now() - startTimeMs;
-
-        try {
-          assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
-          if (assistantMessage.thinking) {
-            assistantMessage.renderedThinking = md.render(assistantMessage.thinking) as string;
+        if (assistantMessage && assistantMessage.role === "assistant") {
+          let toolCallsStr = "";
+          if (result.tool_calls && result.tool_calls.length > 0) {
+              toolCallsStr += "\n\n_Tool Calls:_ \n";
+              for (const tc of result.tool_calls) {
+                  toolCallsStr += `* \`${tc.function.name}\`\n`;
+              }
+              assistantMessage.tool_calls = result.tool_calls;
           }
-        } catch {
-          // Fallback handled in postState
-        }
+          
+          assistantMessage.content = result.response || (result.reasoning || result.tool_calls ? "" : "(empty response)");
+          assistantMessage.content += toolCallsStr;
+          assistantMessage.thinking = result.reasoning;
+          assistantMessage.generationTimeMs = Date.now() - startTimeMs;
 
-        if (chunk.usage) {
-          this.lastTokenUsage = chunk.usage;
+          try {
+            assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
+            if (assistantMessage.thinking) {
+              assistantMessage.renderedThinking = md.render(assistantMessage.thinking) as string;
+            }
+          } catch {
+            // Fallback handled in postState
+          }
         }
+        if (result.usage) {
+          this.lastTokenUsage = result.usage;
+        }
+        
         this.postState();
-      });
 
-      const assistantMessage = this.history[assistantIndex];
-      if (assistantMessage && assistantMessage.role === "assistant") {
-        assistantMessage.content = result.response || (result.reasoning ? "" : "(empty response)");
-        assistantMessage.thinking = result.reasoning;
-        assistantMessage.generationTimeMs = Date.now() - startTimeMs;
-
-        try {
-          assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
-          if (assistantMessage.thinking) {
-            assistantMessage.renderedThinking = md.render(assistantMessage.thinking) as string;
-          }
-        } catch {
-          // Fallback handled in postState
+        if (result.tool_calls && result.tool_calls.length > 0 && !tokenSource.token.isCancellationRequested) {
+            runNext = true;
+            for (const tc of result.tool_calls) {
+               const toolResultText = await executeTool(tc.function.name, tc.function.arguments);
+               this.history.push({
+                   role: "tool",
+                   name: tc.function.name,
+                   tool_call_id: tc.id,
+                   content: toolResultText
+               });
+            }
+            this.history = this.history.slice(-30);
+            this.postState();
+        } else {
+            runNext = false;
         }
       }
-      if (result.usage) {
-        this.lastTokenUsage = result.usage;
-      }
-
       this.history = this.history.slice(-30);
     } catch (error) {
+      const lastIndex = this.history.length - 1;
       if (tokenSource.token.isCancellationRequested) {
         // Keep partial response but mark as completed
-        const assistantMessage = this.history[assistantIndex];
+        const assistantMessage = this.history[lastIndex];
         if (assistantMessage && assistantMessage.role === "assistant") {
           const suffix = "\n\n_[Aborted by user]_";
           assistantMessage.content = assistantMessage.content ? assistantMessage.content + suffix : "_[Aborted by user]_";
@@ -238,7 +274,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       } else {
         const message = error instanceof Error ? error.message : String(error);
 
-        const assistantMessage = this.history[assistantIndex];
+        const assistantMessage = this.history[lastIndex];
         if (assistantMessage && assistantMessage.role === "assistant") {
           assistantMessage.content = assistantMessage.content ? `${assistantMessage.content}\n\n**Error:** ${message}` : `Error: ${message}`;
           assistantMessage.generationTimeMs = Date.now() - startTimeMs;

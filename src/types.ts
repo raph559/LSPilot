@@ -19,9 +19,31 @@ export interface ChatCompletionResponse {
     message?: {
       content?: string | Array<{ type?: string; text?: string }>;
       reasoning_content?: string | Array<{ type?: string; text?: string }>;
+      tool_calls?: Array<{
+        id: string;
+        type: string;
+        function: {
+          name: string;
+          arguments: string;
+        };
+      }>;
+    };
+    delta?: {
+      content?: string | Array<{ type?: string; text?: string }>;
+      reasoning_content?: string | Array<{ type?: string; text?: string }>;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
     };
     reasoning_content?: string;
     text?: string;
+    finish_reason?: string;
   }>;
   error?: {
     message?: string;
@@ -68,15 +90,35 @@ export type LMStudioRole = "system" | "user" | "assistant";
 export interface LMStudioMessage {
   role: LMStudioRole;
   content: string;
+  name?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: string;
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
+  tool_call_id?: string;
 }
 
 export interface ChatHistoryMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool" | "system";
   content: string;
   thinking?: string;
   generationTimeMs?: number;
   renderedContent?: string;
   renderedThinking?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
+  name?: string;
+  tool_call_id?: string;
 }
 
 export interface ChatContextUsage {

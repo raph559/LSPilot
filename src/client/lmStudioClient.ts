@@ -169,7 +169,7 @@ function mergeDisplayedResponse(rawText: string, explicitReasoning: string): { t
   return fromThinkTags;
 }
 
-function extractReasoningAndResponse(response: ChatCompletionResponse): { text: string; reasoning?: string } {
+function extractReasoningAndResponse(response: ChatCompletionResponse): { text: string; reasoning?: string; tool_calls?: any[] } {
   const choice = response.choices?.[0];
   if (!choice) {
     return { text: "" };
@@ -179,7 +179,7 @@ function extractReasoningAndResponse(response: ChatCompletionResponse): { text: 
   const messageReasoning = extractTextFromMessageContent(choice.message?.reasoning_content);
   const choiceReasoning = typeof choice.reasoning_content === "string" ? choice.reasoning_content : "";
   const explicitReasoning = messageReasoning || choiceReasoning;
-  return mergeDisplayedResponse(rawText, explicitReasoning);
+  return { ...mergeDisplayedResponse(rawText, explicitReasoning), tool_calls: choice.message?.tool_calls };
 }
 
 function extractTokenUsage(response: ChatCompletionResponse): ChatTokenUsage | undefined {
@@ -259,7 +259,7 @@ function extractNativeUsage(response: NativeChatResponse): ChatTokenUsage | unde
   };
 }
 
-function extractDeltaText(delta: unknown): { content: string; reasoning: string } {
+function extractDeltaText(delta: unknown): { content: string; reasoning: string; tool_calls?: any[] } {
   if (!delta || typeof delta !== "object") {
     return { content: "", reasoning: "" };
   }
@@ -269,7 +269,7 @@ function extractDeltaText(delta: unknown): { content: string; reasoning: string 
   const reasoningContent = extractTextFromMessageContent(record.reasoning_content);
   const reasoning = reasoningContent || extractTextFromMessageContent(record.reasoning);
 
-  return { content, reasoning };
+  return { content, reasoning, tool_calls: record.tool_calls as any[] | undefined };
 }
 
 async function* readSseEventData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
@@ -668,8 +668,9 @@ export class LMStudioClient {
   public async generateChatResponse(
     history: ChatHistoryMessage[],
     token: vscode.CancellationToken,
-    onUpdate?: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void
-  ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage }> {
+    onUpdate?: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void,
+    tools?: any[]
+  ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
     
@@ -680,10 +681,22 @@ export class LMStudioClient {
     const contextualHistory = history.slice(-20);
     const messages = [
       { role: "system", content: settings.chatSystemPrompt },
-      ...contextualHistory.map((message) => ({
-        role: message.role,
-        content: message.content.slice(-6000)
-      }))
+      ...contextualHistory.map((message) => {
+        const msg: any = { role: message.role };
+        if (message.content) {
+          msg.content = message.content.slice(-6000);
+        }
+        if (message.tool_calls) {
+          msg.tool_calls = message.tool_calls;
+        }
+        if (message.name) {
+          msg.name = message.name;
+        }
+        if (message.tool_call_id) {
+          msg.tool_call_id = message.tool_call_id;
+        }
+        return msg;
+      })
     ];
 
     let result;
@@ -692,6 +705,7 @@ export class LMStudioClient {
         {
           model,
           messages,
+          tools,
           max_tokens: maxTokensToUse,
           temperature: settings.temperature
         },
@@ -705,6 +719,7 @@ export class LMStudioClient {
         {
           model,
           messages,
+          tools,
           max_tokens: maxTokensToUse,
           temperature: settings.temperature
         },
@@ -714,7 +729,7 @@ export class LMStudioClient {
       );
     }
 
-    return { model, response: result.text.trim(), reasoning: result.reasoning, usage: result.usage };
+    return { model, response: result.text.trim(), reasoning: result.reasoning, usage: result.usage, tool_calls: result.tool_calls };
   }
 
   private async resolveModel(settings: LSPilotSettings): Promise<string> {
@@ -830,7 +845,7 @@ export class LMStudioClient {
     settings: LSPilotSettings,
     token: vscode.CancellationToken,
     timeoutMs = settings.timeoutMs
-  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage }> {
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const cancelListener = token.onCancellationRequested(() => controller.abort());
@@ -868,7 +883,7 @@ export class LMStudioClient {
     token: vscode.CancellationToken,
     onUpdate: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void,
     timeoutMs = settings.timeoutMs
-  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage }> {
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const cancelListener = token.onCancellationRequested(() => controller.abort());
@@ -907,6 +922,7 @@ export class LMStudioClient {
       let lastEmittedResponse = "";
       let lastEmittedReasoning = "";
       let lastUsage: ChatTokenUsage | undefined;
+      const accumulatedToolCalls: any[] = [];
 
       for await (const data of readSseEventData(response.body)) {
         if (!data || data === "[DONE]") {
@@ -926,7 +942,7 @@ export class LMStudioClient {
 
         const parsedRecord = parsed as {
           error?: { message?: string };
-          choices?: Array<Record<string, unknown>>;
+          choices?: Array<any>;
           usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
         };
         if (parsedRecord.error?.message) {
@@ -949,6 +965,20 @@ export class LMStudioClient {
         }
         if (delta.reasoning.length > 0) {
           accumulatedReasoning += delta.reasoning;
+        }
+        
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const index = tc.index;
+            if (!accumulatedToolCalls[index]) {
+              accumulatedToolCalls[index] = { id: tc.id, type: tc.type, function: { name: tc.function?.name || "", arguments: tc.function?.arguments || "" } };
+            } else {
+              if (tc.id) accumulatedToolCalls[index].id = tc.id;
+              if (tc.type) accumulatedToolCalls[index].type = tc.type;
+              if (tc.function?.name) accumulatedToolCalls[index].function.name += tc.function.name;
+              if (tc.function?.arguments) accumulatedToolCalls[index].function.arguments += tc.function.arguments;
+            }
+          }
         }
 
         const messageContent = extractTextFromMessageContent((choice.message as Record<string, unknown> | undefined)?.content);
@@ -976,8 +1006,9 @@ export class LMStudioClient {
           onUpdate({ response: displayed.text, reasoning: displayed.reasoning, usage: lastUsage });
         }
       }
-
-      return { ...mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning), usage: lastUsage };
+      
+      const toolCalls = accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined;
+      return { ...mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning), usage: lastUsage, tool_calls: toolCalls };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();
