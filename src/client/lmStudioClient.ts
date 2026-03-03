@@ -102,6 +102,152 @@ function extractCompletionText(response: ChatCompletionResponse): string {
   return choice.text ?? "";
 }
 
+function extractTextFromMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .filter((part) => part && typeof part === "object")
+      .map((part) => part as { type?: string; text?: string })
+      .filter((part) => part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("");
+  }
+
+  return "";
+}
+
+function parseThinkTaggedText(rawText: string): { text: string; reasoning?: string } {
+  let text = "";
+  let reasoning = "";
+  let inThinking = false;
+
+  for (let i = 0; i < rawText.length; ) {
+    if (rawText.startsWith("<think>", i)) {
+      inThinking = true;
+      i += "<think>".length;
+      continue;
+    }
+
+    if (rawText.startsWith("</think>", i)) {
+      inThinking = false;
+      i += "</think>".length;
+      continue;
+    }
+
+    const char = rawText[i];
+    if (inThinking) {
+      reasoning += char;
+    } else {
+      text += char;
+    }
+    i += 1;
+  }
+
+  const cleanedReasoning = reasoning.trim();
+  return {
+    text: text.trim(),
+    reasoning: cleanedReasoning.length > 0 ? cleanedReasoning : undefined
+  };
+}
+
+function mergeDisplayedResponse(rawText: string, explicitReasoning: string): { text: string; reasoning?: string } {
+  const fromThinkTags = parseThinkTaggedText(rawText);
+  const cleanedExplicit = explicitReasoning.trim();
+
+  if (cleanedExplicit.length > 0) {
+    return {
+      text: fromThinkTags.text,
+      reasoning: cleanedExplicit
+    };
+  }
+
+  return fromThinkTags;
+}
+
+function extractReasoningAndResponse(response: ChatCompletionResponse): { text: string; reasoning?: string } {
+  const choice = response.choices?.[0];
+  if (!choice) {
+    return { text: "" };
+  }
+
+  const rawText = extractCompletionText(response);
+  const messageReasoning = extractTextFromMessageContent(choice.message?.reasoning_content);
+  const choiceReasoning = typeof choice.reasoning_content === "string" ? choice.reasoning_content : "";
+  const explicitReasoning = messageReasoning || choiceReasoning;
+  return mergeDisplayedResponse(rawText, explicitReasoning);
+}
+
+function extractDeltaText(delta: unknown): { content: string; reasoning: string } {
+  if (!delta || typeof delta !== "object") {
+    return { content: "", reasoning: "" };
+  }
+
+  const record = delta as Record<string, unknown>;
+  const content = extractTextFromMessageContent(record.content);
+  const reasoningContent = extractTextFromMessageContent(record.reasoning_content);
+  const reasoning = reasoningContent || extractTextFromMessageContent(record.reasoning);
+
+  return { content, reasoning };
+}
+
+async function* readSseEventData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        buffer += decoder.decode();
+        buffer = buffer.replace(/\r\n/g, "\n");
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const eventBlock = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf("\n\n");
+
+        const lines = eventBlock.split(/\r?\n/);
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+
+        if (dataLines.length > 0) {
+          yield dataLines.join("\n");
+        }
+      }
+    }
+
+    const tail = buffer.trim();
+    if (tail.length > 0) {
+      const lines = tail.split(/\r?\n/);
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+      if (dataLines.length > 0) {
+        yield dataLines.join("\n");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function cleanCompletion(raw: string, suffix: string, maxLines: number): string {
   let text = raw.replace(/\r\n/g, "\n");
 
@@ -184,7 +330,7 @@ export class LMStudioClient {
       token
     );
 
-    return { model, sample: completion.trim() };
+    return { model, sample: completion.text.trim() };
   }
 
   public async loadModel(model: string, token: vscode.CancellationToken): Promise<void> {
@@ -351,14 +497,15 @@ export class LMStudioClient {
       token
     );
 
-    const cleaned = cleanCompletion(raw, suffix, settings.maxLines);
+    const cleaned = cleanCompletion(raw.text, suffix, settings.maxLines);
     return cleaned || undefined;
   }
 
   public async generateChatResponse(
     history: ChatHistoryMessage[],
-    token: vscode.CancellationToken
-  ): Promise<{ model: string; response: string }> {
+    token: vscode.CancellationToken,
+    onUpdate?: (chunk: { response: string; reasoning?: string }) => void
+  ): Promise<{ model: string; response: string; reasoning?: string }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
 
@@ -369,20 +516,18 @@ export class LMStudioClient {
 
     const messages: LMStudioMessage[] = [{ role: "system", content: settings.chatSystemPrompt }, ...contextualHistory];
 
-    const raw = await this.chatCompletion(
-      {
-        model,
-        messages,
-        temperature: settings.temperature,
-        max_tokens: settings.chatMaxTokens,
-        stream: false
-      },
-      settings,
-      token,
-      settings.chatTimeoutMs
-    );
+    const requestBody = {
+      model,
+      messages,
+      temperature: settings.temperature,
+      max_tokens: settings.chatMaxTokens
+    };
 
-    return { model, response: raw.trim() };
+    const raw = onUpdate
+      ? await this.chatCompletionStream(requestBody, settings, token, onUpdate, settings.chatTimeoutMs)
+      : await this.chatCompletion({ ...requestBody, stream: false }, settings, token, settings.chatTimeoutMs);
+
+    return { model, response: raw.text.trim(), reasoning: raw.reasoning };
   }
 
   private async resolveModel(settings: LSPilotSettings): Promise<string> {
@@ -459,7 +604,7 @@ export class LMStudioClient {
     settings: LSPilotSettings,
     token: vscode.CancellationToken,
     timeoutMs = settings.timeoutMs
-  ): Promise<string> {
+  ): Promise<{ text: string; reasoning?: string }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const cancelListener = token.onCancellationRequested(() => controller.abort());
@@ -483,7 +628,119 @@ export class LMStudioClient {
         throw new Error(json.error?.message || `LM Studio request failed (${response.status})`);
       }
 
-      return extractCompletionText(json);
+      return extractReasoningAndResponse(json);
+    } finally {
+      clearTimeout(timeout);
+      cancelListener.dispose();
+    }
+  }
+
+  private async chatCompletionStream(
+    body: Record<string, unknown>,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken,
+    onUpdate: (chunk: { response: string; reasoning?: string }) => void,
+    timeoutMs = settings.timeoutMs
+  ): Promise<{ text: string; reasoning?: string }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelListener = token.onCancellationRequested(() => controller.abort());
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`${settings.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...body, stream: true }),
+          signal: controller.signal
+        });
+      } catch (error) {
+        const timeoutKey = timeoutMs === settings.chatTimeoutMs ? "lspilot.chatTimeoutMs" : "lspilot.timeoutMs";
+        throw new Error(formatLMStudioRequestError(error, settings, "/chat/completions", timeoutKey));
+      }
+
+      if (!response.ok) {
+        let errorMessage = `LM Studio request failed (${response.status})`;
+        try {
+          const json = (await response.json()) as ChatCompletionResponse;
+          errorMessage = json.error?.message || errorMessage;
+        } catch {
+          // Ignore parse errors and surface status.
+        }
+        throw new Error(errorMessage);
+      }
+
+      if (!response.body) {
+        return this.chatCompletion({ ...body, stream: false }, settings, token, timeoutMs);
+      }
+
+      let accumulatedResponse = "";
+      let accumulatedReasoning = "";
+      let lastEmittedResponse = "";
+      let lastEmittedReasoning = "";
+
+      for await (const data of readSseEventData(response.body)) {
+        if (!data || data === "[DONE]") {
+          continue;
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue;
+        }
+
+        if (!parsed || typeof parsed !== "object") {
+          continue;
+        }
+
+        const parsedRecord = parsed as { error?: { message?: string }; choices?: Array<Record<string, unknown>> };
+        if (parsedRecord.error?.message) {
+          throw new Error(parsedRecord.error.message);
+        }
+
+        const choice = parsedRecord.choices?.[0];
+        if (!choice) {
+          continue;
+        }
+
+        const delta = extractDeltaText(choice.delta);
+        if (delta.content.length > 0) {
+          accumulatedResponse += delta.content;
+        }
+        if (delta.reasoning.length > 0) {
+          accumulatedReasoning += delta.reasoning;
+        }
+
+        const messageContent = extractTextFromMessageContent((choice.message as Record<string, unknown> | undefined)?.content);
+        if (messageContent.length > accumulatedResponse.length) {
+          accumulatedResponse = messageContent;
+        }
+
+        const messageReasoning = extractTextFromMessageContent(
+          (choice.message as Record<string, unknown> | undefined)?.reasoning_content
+        );
+        if (messageReasoning.length > accumulatedReasoning.length) {
+          accumulatedReasoning = messageReasoning;
+        }
+
+        const textFallback = extractTextFromMessageContent(choice.text);
+        if (textFallback.length > accumulatedResponse.length) {
+          accumulatedResponse = textFallback;
+        }
+
+        const displayed = mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning);
+        const reasoningForEmit = displayed.reasoning ?? "";
+        if (displayed.text !== lastEmittedResponse || reasoningForEmit !== lastEmittedReasoning) {
+          lastEmittedResponse = displayed.text;
+          lastEmittedReasoning = reasoningForEmit;
+          onUpdate({ response: displayed.text, reasoning: displayed.reasoning });
+        }
+      }
+
+      return mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning);
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();

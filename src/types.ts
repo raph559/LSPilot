@@ -18,7 +18,9 @@ export interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
       content?: string | Array<{ type?: string; text?: string }>;
+      reasoning_content?: string | Array<{ type?: string; text?: string }>;
     };
+    reasoning_content?: string;
     text?: string;
   }>;
   error?: {
@@ -50,4 +52,5 @@ export interface LMStudioMessage {
 export interface ChatHistoryMessage {
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
 }
