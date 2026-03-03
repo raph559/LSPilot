@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type {
+  ChatTokenUsage,
   ChatCompletionResponse,
   ChatHistoryMessage,
   LMStudioMessage,
@@ -180,6 +181,31 @@ function extractReasoningAndResponse(response: ChatCompletionResponse): { text: 
   return mergeDisplayedResponse(rawText, explicitReasoning);
 }
 
+function extractTokenUsage(response: ChatCompletionResponse): ChatTokenUsage | undefined {
+  const usage = response.usage;
+  if (!usage) {
+    return undefined;
+  }
+
+  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined;
+  const completionTokens = typeof usage.completion_tokens === "number" ? usage.completion_tokens : undefined;
+  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : undefined;
+
+  if (typeof totalTokens !== "number" && typeof promptTokens !== "number" && typeof completionTokens !== "number") {
+    return undefined;
+  }
+
+  const safePrompt = Math.max(0, promptTokens ?? 0);
+  const safeCompletion = Math.max(0, completionTokens ?? 0);
+  const safeTotal = Math.max(0, totalTokens ?? safePrompt + safeCompletion);
+
+  return {
+    promptTokens: safePrompt,
+    completionTokens: safeCompletion,
+    totalTokens: safeTotal
+  };
+}
+
 function extractDeltaText(delta: unknown): { content: string; reasoning: string } {
   if (!delta || typeof delta !== "object") {
     return { content: "", reasoning: "" };
@@ -268,6 +294,47 @@ function cleanCompletion(raw: string, suffix: string, maxLines: number): string 
   }
 
   return text;
+}
+
+function extractPositiveNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function extractRuntimeContextWindowFromRecord(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+
+  const record = raw as Record<string, unknown>;
+  // Prefer runtime/loaded context keys, not theoretical model maxima.
+  const directKeys = [
+    "context_length",
+    "n_ctx",
+    "ctx_size",
+    "runtime_context_length",
+    "loaded_context_length",
+    "context_window"
+  ];
+  for (const key of directKeys) {
+    const value = extractPositiveNumber(record, key);
+    if (value) {
+      return Math.round(value);
+    }
+  }
+
+  const nestedKeys = ["metadata", "model_info", "info"];
+  for (const nestedKey of nestedKeys) {
+    const nested = record[nestedKey];
+    if (nested && typeof nested === "object") {
+      const value = extractRuntimeContextWindowFromRecord(nested);
+      if (value) {
+        return value;
+      }
+    }
+  }
+
+  return undefined;
 }
 
 export class LMStudioClient {
@@ -452,6 +519,44 @@ export class LMStudioClient {
     return typeof match?.size_bytes === "number" ? match.size_bytes : undefined;
   }
 
+  public async detectModelContextWindowTokens(token: vscode.CancellationToken): Promise<number | undefined> {
+    const settings = this.getSettings();
+    if (!settings.model) {
+      return undefined;
+    }
+
+    try {
+      const nativeModels = await this.fetchNativeModels(settings, token);
+      const match = nativeModels.find((entry) => {
+        if (entry.key === settings.model) {
+          return true;
+        }
+        return (entry.loaded_instances ?? []).some((instance) => instance.id === settings.model);
+      });
+      if (!match) {
+        return undefined;
+      }
+
+      // Prefer loaded instance runtime settings, which reflect how the model is actually loaded.
+      for (const instance of match.loaded_instances ?? []) {
+        const fromInstance = extractRuntimeContextWindowFromRecord(instance);
+        if (fromInstance) {
+          return fromInstance;
+        }
+      }
+
+      // Some builds expose runtime context on the model entry itself.
+      const fromEntry = extractRuntimeContextWindowFromRecord(match);
+      if (fromEntry) {
+        return fromEntry;
+      }
+    } catch {
+      // Best effort.
+    }
+
+    return undefined;
+  }
+
   public async generateInlineCompletion(
     document: vscode.TextDocument,
     position: vscode.Position,
@@ -504,8 +609,8 @@ export class LMStudioClient {
   public async generateChatResponse(
     history: ChatHistoryMessage[],
     token: vscode.CancellationToken,
-    onUpdate?: (chunk: { response: string; reasoning?: string }) => void
-  ): Promise<{ model: string; response: string; reasoning?: string }> {
+    onUpdate?: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void
+  ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
 
@@ -527,7 +632,7 @@ export class LMStudioClient {
       ? await this.chatCompletionStream(requestBody, settings, token, onUpdate, settings.chatTimeoutMs)
       : await this.chatCompletion({ ...requestBody, stream: false }, settings, token, settings.chatTimeoutMs);
 
-    return { model, response: raw.text.trim(), reasoning: raw.reasoning };
+    return { model, response: raw.text.trim(), reasoning: raw.reasoning, usage: raw.usage };
   }
 
   private async resolveModel(settings: LSPilotSettings): Promise<string> {
@@ -604,7 +709,7 @@ export class LMStudioClient {
     settings: LSPilotSettings,
     token: vscode.CancellationToken,
     timeoutMs = settings.timeoutMs
-  ): Promise<{ text: string; reasoning?: string }> {
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const cancelListener = token.onCancellationRequested(() => controller.abort());
@@ -628,7 +733,8 @@ export class LMStudioClient {
         throw new Error(json.error?.message || `LM Studio request failed (${response.status})`);
       }
 
-      return extractReasoningAndResponse(json);
+      const parsed = extractReasoningAndResponse(json);
+      return { ...parsed, usage: extractTokenUsage(json) };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();
@@ -639,9 +745,9 @@ export class LMStudioClient {
     body: Record<string, unknown>,
     settings: LSPilotSettings,
     token: vscode.CancellationToken,
-    onUpdate: (chunk: { response: string; reasoning?: string }) => void,
+    onUpdate: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void,
     timeoutMs = settings.timeoutMs
-  ): Promise<{ text: string; reasoning?: string }> {
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const cancelListener = token.onCancellationRequested(() => controller.abort());
@@ -679,6 +785,7 @@ export class LMStudioClient {
       let accumulatedReasoning = "";
       let lastEmittedResponse = "";
       let lastEmittedReasoning = "";
+      let lastUsage: ChatTokenUsage | undefined;
 
       for await (const data of readSseEventData(response.body)) {
         if (!data || data === "[DONE]") {
@@ -696,9 +803,18 @@ export class LMStudioClient {
           continue;
         }
 
-        const parsedRecord = parsed as { error?: { message?: string }; choices?: Array<Record<string, unknown>> };
+        const parsedRecord = parsed as {
+          error?: { message?: string };
+          choices?: Array<Record<string, unknown>>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+        };
         if (parsedRecord.error?.message) {
           throw new Error(parsedRecord.error.message);
+        }
+
+        const chunkUsage = extractTokenUsage(parsedRecord as ChatCompletionResponse);
+        if (chunkUsage) {
+          lastUsage = chunkUsage;
         }
 
         const choice = parsedRecord.choices?.[0];
@@ -736,11 +852,11 @@ export class LMStudioClient {
         if (displayed.text !== lastEmittedResponse || reasoningForEmit !== lastEmittedReasoning) {
           lastEmittedResponse = displayed.text;
           lastEmittedReasoning = reasoningForEmit;
-          onUpdate({ response: displayed.text, reasoning: displayed.reasoning });
+          onUpdate({ response: displayed.text, reasoning: displayed.reasoning, usage: lastUsage });
         }
       }
 
-      return mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning);
+      return { ...mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning), usage: lastUsage };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();

@@ -35,6 +35,12 @@ ${chatWebviewStyles}
   </div>
   <div id="messages"></div>
   <div class="composer">
+    <div class="context context-in-composer" id="context" title="Context info unavailable. LM Studio did not return runtime context metadata and/or usage.">
+      <div class="context-label" id="contextLabel">Context unavailable</div>
+      <div class="context-track">
+        <div class="context-fill" id="contextFill"></div>
+      </div>
+    </div>
     <textarea id="input" placeholder="Ask something about your code..."></textarea>
     <div class="send-row">
       <span class="hint">Enter to send, Shift+Enter for newline</span>

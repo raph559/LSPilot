@@ -6,8 +6,11 @@ export const chatWebviewScript = `
     const clearBtn = document.getElementById("clear");
     const selectModelBtn = document.getElementById("selectModel");
     const modelEl = document.getElementById("model");
+    const contextEl = document.getElementById("context");
+    const contextLabelEl = document.getElementById("contextLabel");
+    const contextFillEl = document.getElementById("contextFill");
 
-    let state = { busy: false, modelLabel: "None", messages: [] };
+    let state = { busy: false, modelLabel: "None", messages: [], contextUsage: undefined };
 
     function appendMessage(message, index, openThinkingIndices) {
       const wrapper = document.createElement("div");
@@ -53,6 +56,19 @@ export const chatWebviewScript = `
 
     function render() {
       modelEl.textContent = "Model: " + state.modelLabel;
+      const usage = state.contextUsage;
+      if (usage && typeof usage.usagePercent === "number") {
+        const pct = Math.max(0, Math.min(100, Number(usage.usagePercent)));
+        const used = Number(usage.totalTokens || 0).toLocaleString();
+        const total = Number(usage.contextWindowTokens || 0).toLocaleString();
+        contextLabelEl.textContent = "Context " + pct.toFixed(1) + "% (" + used + "/" + total + ")";
+        contextFillEl.style.width = pct + "%";
+        contextEl.title = typeof usage.details === "string" ? usage.details : "";
+      } else {
+        contextLabelEl.textContent = "Context unavailable";
+        contextFillEl.style.width = "0%";
+        contextEl.title = "Context info unavailable. LM Studio did not return runtime context metadata and/or usage.";
+      }
       sendBtn.disabled = state.busy;
       inputEl.disabled = state.busy;
 

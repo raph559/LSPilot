@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { LMStudioClient } from "../client/lmStudioClient";
-import type { ChatHistoryMessage } from "../types";
+import type { ChatContextUsage, ChatHistoryMessage, ChatTokenUsage } from "../types";
 import { createChatWebviewHtml } from "./webviewHtml";
 
 export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
@@ -10,6 +10,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private history: ChatHistoryMessage[] = [];
   private busy = false;
   private activeRequest: vscode.CancellationTokenSource | undefined;
+  private detectedContextWindowTokens: number | undefined;
+  private contextProbeInFlight = false;
+  private lastTokenUsage: ChatTokenUsage | undefined;
 
   public constructor(private readonly client: LMStudioClient) {}
 
@@ -36,6 +39,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   public refresh(): void {
+    this.detectedContextWindowTokens = undefined;
     this.postState();
   }
 
@@ -45,6 +49,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRequest = undefined;
     this.busy = false;
     this.history = [];
+    this.lastTokenUsage = undefined;
     this.postState();
 
     if (showNotification) {
@@ -116,6 +121,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
         assistantMessage.content = chunk.response;
         assistantMessage.thinking = chunk.reasoning;
+        this.lastTokenUsage = chunk.usage;
         this.postState();
       });
 
@@ -124,6 +130,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         assistantMessage.content = result.response || "(empty response)";
         assistantMessage.thinking = result.reasoning;
       }
+      this.lastTokenUsage = result.usage;
 
       this.history = this.history.slice(-30);
     } catch (error) {
@@ -156,14 +163,76 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    void this.refreshDetectedContextWindow();
+
     const settings = this.client.getSettings();
     const modelLabel = settings.model || "None";
+    const contextUsage = this.getEstimatedContextUsage();
 
     void this.view.webview.postMessage({
       type: "state",
       busy: this.busy,
       modelLabel,
-      messages: this.history
+      messages: this.history,
+      contextUsage
     });
+  }
+
+  private getEstimatedContextUsage(): ChatContextUsage | undefined {
+    const contextWindowTokens = this.detectedContextWindowTokens;
+    const usage = this.lastTokenUsage;
+    if (!contextWindowTokens || contextWindowTokens <= 0 || !usage) {
+      return undefined;
+    }
+    const usageRatio = Math.min(1, usage.totalTokens / contextWindowTokens);
+    const usagePercent = Math.round(usageRatio * 1000) / 10;
+    const remaining = contextWindowTokens - usage.totalTokens;
+    const detailLines = [
+      `Prompt: ${usage.promptTokens.toLocaleString()} tokens (LM Studio API)`,
+      `Completion: ${usage.completionTokens.toLocaleString()} tokens (LM Studio API)`,
+      `Total: ${usage.totalTokens.toLocaleString()} / ${contextWindowTokens.toLocaleString()} tokens (${usagePercent.toFixed(1)}%)`,
+      remaining >= 0
+        ? `Remaining: ${remaining.toLocaleString()} tokens`
+        : `Overflow: ${Math.abs(remaining).toLocaleString()} tokens`
+    ];
+
+    return {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+      contextWindowTokens,
+      usageRatio,
+      usagePercent,
+      details: detailLines.join("\n")
+    };
+  }
+
+  private async refreshDetectedContextWindow(): Promise<void> {
+    if (this.contextProbeInFlight) {
+      return;
+    }
+
+    const settings = this.client.getSettings();
+    if (!settings.model) {
+      if (this.detectedContextWindowTokens !== undefined) {
+        this.detectedContextWindowTokens = undefined;
+      }
+      return;
+    }
+
+    this.contextProbeInFlight = true;
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+      const detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
+      if (typeof detected === "number" && detected > 0 && detected !== this.detectedContextWindowTokens) {
+        this.detectedContextWindowTokens = detected;
+        this.postState();
+      }
+    } catch {
+      // Best effort only.
+    } finally {
+      tokenSource.dispose();
+      this.contextProbeInFlight = false;
+    }
   }
 }

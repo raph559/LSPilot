@@ -36,6 +36,46 @@ export const chatWebviewStyles = `
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .context {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 110px;
+      max-width: 190px;
+      width: 100%;
+    }
+    .context.hidden {
+      display: none;
+    }
+    .context-in-composer {
+      max-width: none;
+      min-width: 0;
+    }
+    .context-label {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1;
+    }
+    .context-track {
+      width: 100%;
+      height: 6px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--vscode-input-background) 75%, var(--bg));
+      border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    }
+    .context-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(
+        90deg,
+        var(--vscode-charts-green, #4caf50) 0%,
+        var(--vscode-charts-yellow, #e8b84d) 70%,
+        var(--vscode-charts-red, #d64545) 100%
+      );
+      transition: width 120ms ease-out;
     }
     .actions {
       display: flex;
