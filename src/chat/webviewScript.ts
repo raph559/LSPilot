@@ -75,8 +75,9 @@ export const chatWebviewScript = `
         }
         
         const thinkingBody = details.querySelector('.thinking-body');
-        if (thinkingBody.textContent !== message.thinking) {
-          thinkingBody.textContent = message.thinking;
+        const targetThinkingHTML = message.renderedThinking || "";
+        if (thinkingBody.innerHTML !== targetThinkingHTML) {
+          thinkingBody.innerHTML = targetThinkingHTML;
         }
       } else if (details) {
         details.remove();
@@ -89,12 +90,18 @@ export const chatWebviewScript = `
         wrapper.appendChild(contentEl);
       }
       
-      const targetContent = (typeof message.content === "string" && message.content.length > 0) 
-        ? message.content 
-        : (message.role === "assistant" ? "Thinking..." : "");
+      let targetContentHTML = "";
+      if (message.renderedContent) {
+        targetContentHTML = message.renderedContent;
+      } else if (typeof message.content === "string" && message.content.length > 0) {
+        // Fallback or while typing if renderedContent is somehow missing
+        targetContentHTML = message.content; 
+      } else if (message.role === "assistant") {
+        targetContentHTML = "<em>Thinking...</em>";
+      }
 
-      if (contentEl.textContent !== targetContent) {
-        contentEl.textContent = targetContent;
+      if (contentEl.innerHTML !== targetContentHTML) {
+        contentEl.innerHTML = targetContentHTML;
       }
 
       // Timer

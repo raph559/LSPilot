@@ -75,6 +75,8 @@ export interface ChatHistoryMessage {
   content: string;
   thinking?: string;
   generationTimeMs?: number;
+  renderedContent?: string;
+  renderedThinking?: string;
 }
 
 export interface ChatContextUsage {

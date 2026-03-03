@@ -1,4 +1,22 @@
 import * as vscode from "vscode";
+import { marked } from "marked";
+import hljs from "highlight.js";
+import { markedHighlight } from "marked-highlight";
+
+marked.use({
+  breaks: true,
+  gfm: true
+});
+
+marked.use(markedHighlight({
+  emptyLangClass: 'hljs',
+  langPrefix: 'hljs language-',
+  highlight(code, lang) {
+    const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+    return hljs.highlight(code, { language }).value;
+  }
+}));
+
 import { LMStudioClient } from "../client/lmStudioClient";
 import type { ChatContextUsage, ChatHistoryMessage, ChatTokenUsage } from "../types";
 import { createChatWebviewHtml } from "./webviewHtml";
@@ -183,12 +201,32 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     const modelLabel = settings.model || "None";
     const contextUsage = this.getEstimatedContextUsage();
 
+    // Parse markdown before sending to webview
+    const renderedMessages = this.history.map((msg) => {
+      let renderedContent: string | undefined;
+      let renderedThinking: string | undefined;
+      try {
+        renderedContent = marked.parse(msg.content) as string;
+        if (msg.thinking) {
+          renderedThinking = marked.parse(msg.thinking) as string;
+        }
+      } catch (e) {
+        renderedContent = msg.content;
+        renderedThinking = msg.thinking;
+      }
+      return {
+        ...msg,
+        renderedContent,
+        renderedThinking
+      };
+    });
+
     void this.view.webview.postMessage({
       type: "state",
       busy: this.busy,
       busyStartTimeMs: this.busyStartTimeMs,
       modelLabel,
-      messages: this.history,
+      messages: renderedMessages,
       contextUsage
     });
   }

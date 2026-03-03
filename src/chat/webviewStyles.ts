@@ -124,7 +124,6 @@ export const chatWebviewStyles = `
       padding: 12px 14px;
       line-height: 1.5;
       font-size: 13px;
-      white-space: pre-wrap;
       word-break: break-word;
       position: relative;
     }
@@ -138,6 +137,66 @@ export const chatWebviewStyles = `
       border: 1px solid var(--border);
     }
     
+    .msg-content p, .thinking-body p { margin-bottom: 8px; }
+    .msg-content p:last-child, .thinking-body p:last-child { margin-bottom: 0; }
+    .msg-content pre, .thinking-body pre {
+      background: var(--vscode-editor-background);
+      padding: 10px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 8px 0;
+      border: 1px solid var(--border);
+    }
+    .msg-content code, .thinking-body code {
+      font-family: var(--vscode-editor-font-family);
+      font-size: 12px;
+      background: var(--vscode-editor-background);
+      padding: 2px 4px;
+      border-radius: 4px;
+      color: var(--vscode-editor-foreground);
+    }
+    .msg-content pre code, .thinking-body pre code {
+      padding: 0;
+      background: transparent;
+    }
+    .msg-content ul, .msg-content ol, .thinking-body ul, .thinking-body ol { margin: 8px 0 8px 24px; }
+    .msg-content blockquote, .thinking-body blockquote {
+      border-left: 3px solid var(--vscode-textBlockQuote-border);
+      padding-left: 12px;
+      margin: 8px 0;
+      color: var(--muted);
+    }
+    .msg-content table, .thinking-body table {
+      border-collapse: collapse;
+      margin: 12px 0;
+      width: 100%;
+      font-size: 13px;
+    }
+    .msg-content th, .msg-content td, .thinking-body th, .thinking-body td {
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .msg-content th, .thinking-body th {
+      background: color-mix(in srgb, var(--vscode-editor-foreground) 5%, transparent);
+      font-weight: 600;
+    }
+
+    /* Highlight.js mapped to standard VS Code colors */
+    .hljs { color: var(--vscode-editor-foreground); }
+    .hljs-keyword, .hljs-keyword.hljs-function { color: var(--vscode-symbolIcon-keywordForeground, #569cd6); }
+    .hljs-string { color: var(--vscode-symbolIcon-stringForeground, #ce9178); }
+    .hljs-comment { color: var(--vscode-editorCodeLens-modifiedForeground, #6a9955); font-style: italic; }
+    .hljs-number { color: var(--vscode-symbolIcon-numberForeground, #b5cea8); }
+    .hljs-function, .hljs-title { color: var(--vscode-symbolIcon-methodForeground, #dcdcaa); }
+    .hljs-variable, .hljs-params { color: var(--vscode-symbolIcon-variableForeground, #9cdcfe); }
+    .hljs-type, .hljs-built_in { color: var(--vscode-symbolIcon-classForeground, #4ec9b0); }
+    .hljs-literal, .hljs-symbol { color: var(--vscode-symbolIcon-constantForeground, #4fc1ff); }
+    .hljs-attr, .hljs-attribute { color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); }
+    .hljs-meta { color: var(--vscode-symbolIcon-colorForeground, #c586c0); }
+    .hljs-tag, .hljs-name { color: var(--vscode-symbolIcon-textForeground, #569cd6); }
+    .hljs-operator, .hljs-punctuation { color: var(--vscode-editor-foreground); }
+
     details.thinking {
       margin: 0 0 12px 0;
       border: 1px solid var(--border);
@@ -172,7 +231,6 @@ export const chatWebviewStyles = `
       color: var(--muted);
       font-size: 12px;
       line-height: 1.5;
-      white-space: pre-wrap;
       word-break: break-word;
     }
     

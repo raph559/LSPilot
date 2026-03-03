@@ -158,9 +158,15 @@
     "package": "vsce package"
   },
   "devDependencies": {
+    "@types/marked": "^5.0.2",
     "@types/node": "^20.11.30",
     "@types/vscode": "^1.88.0",
     "typescript": "^5.4.5",
     "vsce": "^2.15.0"
+  },
+  "dependencies": {
+    "highlight.js": "^11.11.1",
+    "marked": "^17.0.3",
+    "marked-highlight": "^2.2.3"
   }
 }
