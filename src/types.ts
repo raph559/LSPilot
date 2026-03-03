@@ -120,6 +120,7 @@ export interface ChatHistoryMessage {
   name?: string;
   toolSummary?: string;
   tool_call_id?: string;
+  resolvedPath?: string;
   fileEdit?: {
     filePath: string;
     oldContent: string | null;

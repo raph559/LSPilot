@@ -163,14 +163,85 @@ export const chatWebviewScript = `
         }
       }
 
-      if (message.role === "tool") {
-        if (contentEl.innerHTML !== targetContentHTML) {
-          contentEl.innerHTML = targetContentHTML;
+      if (message.role === "tool" && message._groupStart === index) {
+        const count = message._relatedIndices.length;
+        const displayName = count > 1 ? "Used " + message.name + " on " + count + " files" : (message.toolSummary || "Used " + message.name);
+
+        const summarySpan = wrapper.querySelector('.tool-summary span');
+        if (summarySpan) {
+            const iconSvg = '<i class="codicon codicon-symbol-misc" style="margin-right: 6px; font-size: 14px; vertical-align: text-bottom;"></i>';
+            summarySpan.innerHTML = iconSvg + " <b>" + displayName + "</b>";
         }
 
-        const actionsContainer = wrapper.querySelector('.edit-actions-container');
-        if (actionsContainer) {
-           actionsContainer.style.display = "none";
+        let combinedHtml = "";
+        for (const i of message._relatedIndices) {
+            const m = state.messages[i];
+            if (m.name === "writeFile" && m.fileEdit) {
+                const fileName = (m.fileEdit.filePath || "").split(/[\\\\/]/).pop();
+                const additions = m.fileEdit.additions || 0;
+                const deletions = m.fileEdit.deletions || 0;
+                
+                combinedHtml += '<div class="global-edit-card" style="margin-top: 8px; cursor: pointer;" title="View Diff" data-action="showDiff" data-index="' + i + '">';
+                const fileIcon = '<i class="codicon codicon-diff" style="margin-right: 6px; font-size: 16px; vertical-align: text-bottom;"></i>';
+                
+                combinedHtml += '<div class="edit-file-name" style="flex:1;">' +
+                    '<div style="font-size: 1.25em; font-weight: 500; display: inline-flex; align-items: center;">' +
+                      fileIcon + '<span>' + fileName + '</span>' +
+                    '</div>' +
+                    '<span class="diff-stats" style="margin-left: 8px; font-size: 11px;">' +
+                      '<span style="color: var(--vscode-charts-green, #4caf50);">+' + additions + '</span>' +
+                      '<span style="color: var(--vscode-charts-red, #d64545);">-' + deletions + '</span>' +
+                    '</span>' +
+                  '</div>' +
+                  '<div class="hover-actions" style="opacity: 1;">' +
+                     '<button class="icon-btn" title="View Diff"><i class="codicon codicon-go-to-file" style="font-size: 14px;"></i></button>' +
+                  '</div>' +
+                '</div>';
+            } else if (m.name === "readFile") {
+                let fileName = "file";
+                if (m.toolSummary) {
+                    const match = m.toolSummary.match(/on\\s+<b>([^<]+)<\\/b>/);
+                    if (match) fileName = match[1];
+                }
+                combinedHtml += '<div class="global-edit-card" style="margin-top: 8px; cursor: pointer;" title="Open File" data-action="openFile" data-index="' + i + '">';
+                const fileIcon = '<i class="codicon codicon-file-code" style="margin-right: 6px; font-size: 16px; vertical-align: text-bottom;"></i>';
+                
+                combinedHtml += '<div class="edit-file-name" style="flex:1;">' +
+                    '<div style="font-size: 1.25em; font-weight: 500; display: inline-flex; align-items: center;">' +
+                      fileIcon + '<span>' + fileName + '</span>' +
+                    '</div>' +
+                  '</div>' +
+                  '<div class="hover-actions" style="opacity: 1;">' +
+                     '<button class="icon-btn" title="Open File"><i class="codicon codicon-go-to-file" style="font-size: 14px;"></i></button>' +
+                  '</div>' +
+                '</div>';
+            } else {
+                const text = m.content || "";
+                const safeText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                combinedHtml += '<div class="global-edit-card" style="margin-top: 8px;"><div style="white-space:pre-wrap; font-family:var(--vscode-editor-font-family); font-size:12px;">' + safeText + '</div></div>';
+            }
+        }
+        targetContentHTML = combinedHtml;
+      }
+
+      if (message.role === "tool") {
+        if (message._groupStart !== index) {
+            outerWrapper.style.display = "none";
+        } else {
+            outerWrapper.style.display = "flex";
+            if (contentEl.innerHTML !== targetContentHTML) {
+               contentEl.innerHTML = targetContentHTML;
+            }
+            const actionsContainer = wrapper.querySelector('.edit-actions-container');
+            if (actionsContainer) {
+               actionsContainer.style.display = "none";
+            }
+            
+            const detailsEl = wrapper.querySelector('details.tool-details');
+            if (detailsEl && !detailsEl.hasAttribute('data-opened')) {
+               // Leave it closed by default, but mark it as processed
+               detailsEl.setAttribute('data-opened', 'true');
+            }
         }
       } else {
         if (contentEl.innerHTML !== targetContentHTML) {
@@ -221,6 +292,37 @@ export const chatWebviewScript = `
     }
 
     function render() {
+      let currentGroupStart = -1;
+      for (let i = 0; i < state.messages.length; i++) {
+        const msg = state.messages[i];
+        msg._relatedIndices = [];
+        if (msg.role === "tool") {
+          const countLimit = 100; // prevent unbounded groups
+          const prevCount = currentGroupStart !== -1 ? state.messages[currentGroupStart]._relatedIndices.length : 0;
+          if (currentGroupStart !== -1 && state.messages[currentGroupStart].role === "tool" && state.messages[currentGroupStart].name === msg.name && prevCount < countLimit) {
+            msg._groupStart = currentGroupStart;
+            state.messages[currentGroupStart]._relatedIndices.push(i);
+          } else {
+            currentGroupStart = i;
+            msg._groupStart = i;
+            msg._relatedIndices = [i];
+          }
+        } else {
+          // Check if this message is basically an invisible "empty" message.
+          let hasContent = false;
+          if (typeof msg.renderedContent === "string" && msg.renderedContent.trim().length > 0) hasContent = true;
+          else if (typeof msg.content === "string" && msg.content.trim().length > 0) hasContent = true;
+          
+          let hasThinking = false;
+          if (typeof msg.thinking === "string" && msg.thinking.trim().length > 0) hasThinking = true;
+
+          // If the assistant message has content or thinking, or it's a user message, break the tool sequence group.
+          if (msg.role === "user" || hasContent || hasThinking) {
+             currentGroupStart = -1;
+          }
+        }
+      }
+
       modelEl.textContent = "Model: " + state.modelLabel + (state.modelLoading ? " (Loading...)" : "");
       const noModel = !state.modelLabel || state.modelLabel === "None";
 
@@ -371,6 +473,24 @@ export const chatWebviewScript = `
         }, 2000);
       });
     };
+
+    // Global click delegate for dynamically rendered action cards (Diff / Open File)
+    document.addEventListener("click", (event) => {
+       const target = event.target.closest('[data-action]');
+       if (!target) return;
+
+       const action = target.getAttribute('data-action');
+       const indexStr = target.getAttribute('data-index');
+       if (!indexStr) return;
+
+       const index = parseInt(indexStr, 10);
+
+       if (action === "showDiff") {
+           vscode.postMessage({ type: 'showDiff', index: index });
+       } else if (action === "openFile") {
+           vscode.postMessage({ type: 'openFile', index: index });
+       }
+    });
 
     const renderGlobalPendingEdits = () => {
       const container = document.getElementById("globalPendingEdits");

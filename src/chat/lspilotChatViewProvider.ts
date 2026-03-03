@@ -208,6 +208,20 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message.type === "openFile" && typeof message.index === "number") {
+      const msg = this.history[message.index];
+      if (msg && msg.role === "tool" && msg.resolvedPath) {
+        try {
+          vscode.workspace.openTextDocument(vscode.Uri.file(msg.resolvedPath)).then(doc => {
+            vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.One });
+          });
+        } catch (e: any) {
+          vscode.window.showErrorMessage(`Failed to open file: ${e.message}`);
+        }
+      }
+      return;
+    }
+
     if (message.type === "clear") {
       this.clearChat();
       return;
@@ -340,7 +354,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
                    toolSummary: summaryInfo,
                    tool_call_id: tc.id,
                    content: toolResult.text,
-                   fileEdit: toolResult.fileEdit
+                   fileEdit: toolResult.fileEdit,
+                   resolvedPath: toolResult.resolvedPath
                });
             }
             this.history = this.history.slice(-30);

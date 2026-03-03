@@ -80,6 +80,7 @@ function resolvePath(filePath: string): string {
 
 export interface ToolResult {
   text: string;
+  resolvedPath?: string;
   fileEdit?: {
     filePath: string;
     oldContent: string | null;
@@ -103,7 +104,7 @@ export async function executeTool(name: string, argsString: string): Promise<Too
       case "readFile": {
         const fullPath = resolvePath(args.filePath);
         const data = await fs.readFile(fullPath, 'utf8');
-        return { text: data };
+        return { text: data, resolvedPath: fullPath };
       }
       case "writeFile": {
         const fullPath = resolvePath(args.filePath);
@@ -134,6 +135,7 @@ export async function executeTool(name: string, argsString: string): Promise<Too
 
         return { 
           text: `Successfully wrote to ${args.filePath}`,
+          resolvedPath: fullPath,
           fileEdit: {
             filePath: fullPath,
             oldContent: oldContent,
@@ -147,7 +149,7 @@ export async function executeTool(name: string, argsString: string): Promise<Too
       case "listDirectory": {
         const fullPath = resolvePath(args.dirPath);
         const files = await fs.readdir(fullPath);
-        return { text: files.join('\n') };
+        return { text: files.join('\n'), resolvedPath: fullPath };
       }
       case "runCommand": {
         const workspaceFolders = vscode.workspace.workspaceFolders;
