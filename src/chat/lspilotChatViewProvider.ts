@@ -214,19 +214,11 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
         const assistantMessage = this.history[assistantIndex];
         if (assistantMessage && assistantMessage.role === "assistant") {
-          let toolCallsStr = "";
           if (result.tool_calls && result.tool_calls.length > 0) {
-              toolCallsStr += "\n\n_Tool Calls:_ \n";
-              for (const tc of result.tool_calls) {
-                  toolCallsStr += `* \`${tc.function.name}\`\n`;
-              }
               assistantMessage.tool_calls = result.tool_calls;
           }
-          
+
           assistantMessage.content = result.response || (result.reasoning || result.tool_calls ? "" : "(empty response)");
-          assistantMessage.content += toolCallsStr;
-          assistantMessage.thinking = result.reasoning;
-          assistantMessage.generationTimeMs = Date.now() - startTimeMs;
 
           try {
             assistantMessage.renderedContent = md.render(assistantMessage.content) as string;

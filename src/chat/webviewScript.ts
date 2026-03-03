@@ -86,9 +86,39 @@ export const chatWebviewScript = `
 
       let contentEl = wrapper.querySelector('.msg-content');
       if (!contentEl) {
-        contentEl = document.createElement("div");
-        contentEl.className = "msg-content markdown-body";
-        wrapper.appendChild(contentEl);
+        if (message.role === "tool") {
+          wrapper.className = "msg tool-msg-container";
+          
+          const details = document.createElement("details");
+          details.className = "tool-details";
+          
+          const summary = document.createElement("summary");
+          summary.className = "tool-summary";
+          
+          const iconSvg = '<svg style="width:14px;height:14px;vertical-align:text-bottom;margin-right:4px;" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 1h11l.5.5v13l-.5.5h-11l-.5-.5v-13l.5-.5zM2 2v12h12V2H2zm3.85 4.15L8.7 8l-2.85 1.85-.7-.7L7.3 8 5.15 6.85l.7-.7zM11 10H8v1h3v-1z"></path></svg>';
+          
+          // Use tool name
+          const nameSpan = document.createElement("span");
+          nameSpan.innerHTML = iconSvg + " Used <b>" + (message.name || "Tool") + "</b>";
+          
+          summary.appendChild(nameSpan);
+          details.appendChild(summary);
+          
+          const pre = document.createElement("pre");
+          pre.className = "tool-output-pre";
+          const code = document.createElement("code");
+          code.className = "msg-content tool-output-code"; // msg-content marks it for text upd
+          pre.appendChild(code);
+          
+          details.appendChild(pre);
+          wrapper.appendChild(details);
+          
+          contentEl = code;
+        } else {
+          contentEl = document.createElement("div");
+          contentEl.className = "msg-content markdown-body";
+          wrapper.appendChild(contentEl);
+        }
       }
       
       let targetContentHTML = "";
@@ -101,8 +131,14 @@ export const chatWebviewScript = `
         targetContentHTML = "<em>Thinking...</em>";
       }
 
-      if (contentEl.innerHTML !== targetContentHTML) {
-        contentEl.innerHTML = targetContentHTML;
+      if (message.role === "tool") {
+        if (contentEl.textContent !== targetContentHTML) {
+          contentEl.textContent = targetContentHTML;
+        }
+      } else {
+        if (contentEl.innerHTML !== targetContentHTML) {
+          contentEl.innerHTML = targetContentHTML;
+        }
       }
 
       // Timer

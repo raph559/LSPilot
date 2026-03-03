@@ -135,7 +135,8 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     }
     .msg-wrapper.user { align-self: flex-end; }
     .msg-wrapper.assistant { align-self: flex-start; }
-    .msg-wrapper.tool { align-self: flex-start; max-width: 95%; opacity: 0.8; }
+    .msg-wrapper.tool { align-self: flex-start; width: 100%; margin-top: -8px; }
+    .msg-wrapper.tool .role { display: none; }
 
     .role {
       color: var(--muted);
@@ -166,15 +167,45 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       border-bottom-left-radius: 4px;
       border: 1px solid var(--border);
     }
-    .msg.tool {
+    .msg.tool-msg-container {
+      background: transparent;
+      padding: 0;
+      border: none;
+      margin-left: 8px;
+    }
+    .tool-details {
+      margin-top: 4px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
       background: var(--bg);
-      border-bottom-left-radius: 4px;
-      border: 1px dashed var(--border);
+    }
+    .tool-summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 6px 10px;
+      user-select: none;
+    }
+    .tool-summary:hover {
+      background: var(--assistant-bg);
+    }
+    .tool-summary b {
+      color: var(--fg);
+    }
+    .tool-output-pre {
+      margin: 0;
+      padding: 10px;
+      border-top: 1px solid var(--border);
+      background: var(--user-bg);
+      max-height: 250px;
+      overflow-y: auto;
+    }
+    .tool-output-code {
       font-family: var(--vscode-editor-font-family, monospace);
       font-size: 11px;
       white-space: pre-wrap;
-      max-height: 200px;
-      overflow-y: auto;
+      color: var(--muted);
     }
     .markdown-body {
         background-color: transparent !important;
