@@ -47,7 +47,7 @@ function getErrorCode(error: unknown): string | undefined {
 function formatLMStudioRequestError(
   error: unknown,
   settings: LSPilotSettings,
-  endpoint: "/models" | "/chat/completions" | "/api/v1/chat" | "/api/v1/models/load" | "/api/v1/models/unload",
+  endpoint: "/models" | "/chat/completions" | "/completions" | "/api/v1/chat" | "/api/v1/models/load" | "/api/v1/models/unload",
   timeoutSettingKey?: "lspilot.timeoutMs" | "lspilot.chatTimeoutMs" | "lspilot.modelLoadTimeoutMs"
 ): string {
   const targetUrl = `${settings.baseUrl}${endpoint}`;
@@ -330,14 +330,20 @@ async function* readSseEventData(body: ReadableStream<Uint8Array>): AsyncGenerat
 function cleanCompletion(raw: string, suffix: string, maxLines: number): string {
   let text = raw.replace(/\r\n/g, "\n");
 
+  // Remove common markdown wrappings that chat models sometimes leak
   text = text.replace(/^```[a-zA-Z0-9_-]*\n?/, "");
   text = text.replace(/\n?```$/, "");
+  
+  // Remove FIM tags if the model leaks them
+  text = text.replace(/<\|?fim_middle\|?>/g, "");
+  text = text.replace(/<\|?fim_suffix\|?>/g, "");
 
   if (suffix && text.startsWith(suffix)) {
     text = text.slice(suffix.length);
   }
 
-  if (text.trim().length === 0) {
+  // Allow ghost text that is purely whitespace if it provides indentation
+  if (text.length === 0) {
     return "";
   }
 
@@ -629,25 +635,12 @@ export class LMStudioClient {
     const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
     const suffix = document.getText(new vscode.Range(position, document.lineAt(document.lineCount - 1).range.end));
 
-    const language = document.languageId || "plaintext";
-    const prompt =
-      `File language: ${language}\n` +
-      "Continue the code at <cursor>. Return only the continuation text.\n" +
-      "<prefix>\n" +
-      prefix.slice(-12000) +
-      "\n</prefix>\n" +
-      "<suffix>\n" +
-      suffix.slice(0, 4000) +
-      "\n</suffix>\n" +
-      "<cursor>";
+    const prompt = `<|fim_prefix|>${prefix.slice(-12000)}<|fim_suffix|>${suffix.slice(0, 4000)}<|fim_middle|>`;
 
-    const raw = await this.chatCompletion(
+    const raw = await this.textCompletion(
       {
         model,
-        messages: [
-          { role: "system", content: settings.systemPrompt },
-          { role: "user", content: prompt }
-        ],
+        prompt,
         temperature: settings.temperature,
         max_tokens: settings.maxTokens,
         stream: false
@@ -771,6 +764,45 @@ export class LMStudioClient {
 
       const json = (await response.json()) as NativeModelsResponse;
       return Array.isArray(json.models) ? json.models : [];
+    } finally {
+      clearTimeout(timeout);
+      cancelListener.dispose();
+    }
+  }
+
+  private async textCompletion(
+    body: Record<string, unknown>,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken,
+    timeoutMs = settings.timeoutMs
+  ): Promise<{ text: string; usage?: ChatTokenUsage }> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelListener = token.onCancellationRequested(() => controller.abort());
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`${settings.baseUrl}/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+      } catch (error) {
+        throw new Error(formatLMStudioRequestError(error, settings, "/completions", "lspilot.timeoutMs"));
+      }
+
+      const json = (await response.json()) as { choices?: Array<{ text?: string }>, error?: { message?: string }, usage?: Record<string, unknown> };
+      if (!response.ok) {
+        throw new Error(json.error?.message || `LM Studio request failed (${response.status})`);
+      }
+
+      let text = "";
+      if (json.choices && json.choices.length > 0 && typeof json.choices[0].text === "string") {
+         text = json.choices[0].text;
+      }
+      return { text };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();

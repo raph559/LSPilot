@@ -46,20 +46,28 @@ export function activate(context: vscode.ExtensionContext): void {
         return [];
       }
 
-      const now = Date.now();
-      const key = document.uri.toString();
-      const last = lastRequestByUri.get(key) ?? 0;
-      if (now - last < settings.minRequestGapMs) {
-        return [];
-      }
-      lastRequestByUri.set(key, now);
-
-      const generated = await client.generateInlineCompletion(document, position, token);
-      if (!generated) {
-        return [];
+      if (settings.minRequestGapMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, settings.minRequestGapMs));
+        if (token.isCancellationRequested) {
+          return [];
+        }
       }
 
-      return [new vscode.InlineCompletionItem(generated, new vscode.Range(position, position))];
+      try {
+        const generated = await client.generateInlineCompletion(document, position, token);
+        if (!generated || token.isCancellationRequested) {
+          return [];
+        }
+
+        return [new vscode.InlineCompletionItem(generated, new vscode.Range(position, position))];
+      } catch (e) {
+        // If the request is aborted due to typing, silently ignore.
+        if (e instanceof Error && e.message.includes("aborted")) {
+          return [];
+        }
+        console.error("LSPilot Inline Completion Error:", e);
+        return [];
+      }
     }
   };
 
