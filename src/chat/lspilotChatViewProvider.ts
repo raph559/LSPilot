@@ -138,6 +138,13 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message.type === "stop") {
+      if (this.activeRequest) {
+        this.activeRequest.cancel();
+      }
+      return;
+    }
+
     if (message.type === "send" && typeof message.text === "string") {
       await this.sendUserMessage(message.text);
     }
@@ -220,19 +227,28 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
       this.history = this.history.slice(-30);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      const assistantMessage = this.history[assistantIndex];
-      if (assistantMessage && assistantMessage.role === "assistant") {
-        assistantMessage.content = `Error: ${message}`;
-        assistantMessage.thinking = undefined;
-        assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+      if (tokenSource.token.isCancellationRequested) {
+        // Keep partial response but mark as completed
+        const assistantMessage = this.history[assistantIndex];
+        if (assistantMessage && assistantMessage.role === "assistant") {
+          const suffix = "\n\n_[Aborted by user]_";
+          assistantMessage.content = assistantMessage.content ? assistantMessage.content + suffix : "_[Aborted by user]_";
+          assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+        }
       } else {
-        this.history.push({
-          role: "assistant",
-          content: `Error: ${message}`,
-          generationTimeMs: Date.now() - startTimeMs
-        });
+        const message = error instanceof Error ? error.message : String(error);
+
+        const assistantMessage = this.history[assistantIndex];
+        if (assistantMessage && assistantMessage.role === "assistant") {
+          assistantMessage.content = assistantMessage.content ? `${assistantMessage.content}\n\n**Error:** ${message}` : `Error: ${message}`;
+          assistantMessage.generationTimeMs = Date.now() - startTimeMs;
+        } else {
+          this.history.push({
+            role: "assistant",
+            content: `Error: ${message}`,
+            generationTimeMs: Date.now() - startTimeMs
+          });
+        }
       }
 
       this.history = this.history.slice(-30);

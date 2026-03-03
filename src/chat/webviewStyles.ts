@@ -101,6 +101,8 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       transition: clip-path 0.3s ease-out;
     }
     .actions { display: flex; gap: 8px; }
+    .button-group { display: flex; gap: 8px; }
+    .hidden { display: none !important; }
     button {
       border: 1px solid transparent;
       background: var(--btn-bg);

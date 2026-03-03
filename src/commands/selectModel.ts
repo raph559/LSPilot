@@ -13,9 +13,9 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(precision)} ${units[unit]}`;
 }
 
-function buildLoadProgressMessage(model: string, percent: number, sizeBytes?: number): string {
+function buildLoadProgressMessage(model: string, dots: string, sizeBytes?: number): string {
   const memory = typeof sizeBytes === "number" ? ` | Memory: ${formatBytes(sizeBytes)}` : "";
-  return `Loading "${model}"... ${percent}%${memory}`;
+  return `Loading "${model}"${dots}${memory}`;
 }
 
 export async function loadModelWithProgress(
@@ -31,31 +31,17 @@ export async function loadModelWithProgress(
     // Best effort only.
   }
 
-  const steps = [8, 16, 28, 40, 52, 64, 76, 88, 95];
-  let current = 0;
-  let index = 0;
-  progress.report({ increment: 1, message: buildLoadProgressMessage(model, 1, modelSizeBytes) });
-  current = 1;
+  let dots = ".";
+  progress.report({ message: buildLoadProgressMessage(model, dots, modelSizeBytes) });
 
   const timer = setInterval(() => {
-    if (index >= steps.length) {
-      return;
-    }
-    const next = steps[index];
-    progress.report({
-      increment: next - current,
-      message: buildLoadProgressMessage(model, next, modelSizeBytes)
-    });
-    current = next;
-    index += 1;
-  }, 1200);
+    dots = dots.length >= 3 ? "." : dots + ".";
+    // We omit 'increment' entirely, which causes the progress bar to show an indeterminate animation
+    progress.report({ message: buildLoadProgressMessage(model, dots, modelSizeBytes) });
+  }, 500);
 
   try {
     await client.loadModel(model, token);
-    progress.report({
-      increment: 100 - current,
-      message: buildLoadProgressMessage(model, 100, modelSizeBytes)
-    });
   } finally {
     clearInterval(timer);
   }

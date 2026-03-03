@@ -3,6 +3,7 @@ export const chatWebviewScript = `
     const messagesEl = document.getElementById("messages");
     const inputEl = document.getElementById("input");
     const sendBtn = document.getElementById("send");
+    const stopBtn = document.getElementById("stop");
     const clearBtn = document.getElementById("clear");
     const selectModelBtn = document.getElementById("selectModel");
     const modelEl = document.getElementById("model");
@@ -152,12 +153,25 @@ export const chatWebviewScript = `
       }
 
       sendBtn.disabled = state.busy || noModel || state.modelLoading;
-      inputEl.disabled = state.busy || noModel || state.modelLoading;
-      inputEl.placeholder = state.modelLoading 
-        ? "Waiting for model to load..." 
-        : noModel 
-          ? "Select a model to start chatting..." 
-          : "Ask something about your code...";
+      
+      if (state.busy) {
+        sendBtn.classList.add("hidden");
+        stopBtn.classList.remove("hidden");
+      } else {
+        sendBtn.classList.remove("hidden");
+        stopBtn.classList.add("hidden");
+      }
+
+      if (state.modelLoading) {
+        sendBtn.textContent = "Loading...";
+      } else {
+        sendBtn.textContent = "Send";
+      }
+
+      inputEl.disabled = state.busy || noModel;
+      inputEl.placeholder = noModel 
+        ? "Select a model to start chatting..." 
+        : "Ask something about your code...";
 
       // Maintain scroll position if at bottom
       const isAtBottom = messagesEl.scrollHeight - messagesEl.clientHeight <= messagesEl.scrollTop + 10;
@@ -205,6 +219,7 @@ export const chatWebviewScript = `
     });
 
     sendBtn.addEventListener("click", sendInput);
+    stopBtn.addEventListener("click", () => vscode.postMessage({ type: "stop" }));
     clearBtn.addEventListener("click", () => vscode.postMessage({ type: "clear" }));
     selectModelBtn.addEventListener("click", () => vscode.postMessage({ type: "selectModel" }));
     inputEl.addEventListener("keydown", (event) => {

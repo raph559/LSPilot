@@ -45,7 +45,10 @@ ${getWebviewStyles(extensionUri)}
       <textarea id="input" placeholder="Ask something about your code..."></textarea>
       <div class="send-row">
         <span class="hint">Enter to send, Shift+Enter for newline</span>
-        <button id="send">Send</button>
+        <div class="button-group">
+          <button id="stop" class="hidden">Stop</button>
+          <button id="send">Send</button>
+        </div>
       </div>
     </div>
   </div>
