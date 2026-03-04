@@ -87,6 +87,7 @@ export interface ToolResult {
     newContent: string;
     additions?: number;
     deletions?: number;
+    superseded?: boolean;
     diffs?: Array<{ added?: boolean; removed?: boolean; value: string; count?: number }>;
   };
 }

@@ -1,4 +1,6 @@
 import * as vscode from "vscode";
+import * as path from "path";
+import * as diff from "diff";
 import MarkdownIt from "markdown-it";
 // @ts-ignore
 import markdownItImsize from "markdown-it-imsize";
@@ -78,6 +80,89 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
   public constructor(private readonly client: LMStudioClient, private readonly extensionUri: vscode.Uri) {}
 
+  private isSameFilePath(a: string, b: string): boolean {
+    const normalizedA = path.normalize(a);
+    const normalizedB = path.normalize(b);
+    if (process.platform === "win32") {
+      return normalizedA.toLowerCase() === normalizedB.toLowerCase();
+    }
+    return normalizedA === normalizedB;
+  }
+
+  private buildDiff(
+    oldContent: string | null,
+    newContent: string
+  ): {
+    additions: number;
+    deletions: number;
+    diffs: Array<{ added?: boolean; removed?: boolean; value: string; count?: number }>;
+  } {
+    let additions = 0;
+    let deletions = 0;
+    let diffs: Array<{ added?: boolean; removed?: boolean; value: string; count?: number }> = [];
+
+    if (oldContent === null) {
+      additions = newContent.split("\n").length;
+      diffs = [{ added: true, value: newContent }];
+    } else {
+      diffs = diff.diffLines(oldContent, newContent);
+      for (const change of diffs) {
+        if (change.added) additions += change.count || 0;
+        if (change.removed) deletions += change.count || 0;
+      }
+    }
+
+    return { additions, deletions, diffs };
+  }
+
+  private coalescePendingFileEdit(fileEdit?: ChatHistoryMessage["fileEdit"]): void {
+    if (!fileEdit) {
+      return;
+    }
+
+    let baselineOldContent = fileEdit.oldContent;
+    const pendingForSameFile: Array<NonNullable<ChatHistoryMessage["fileEdit"]>> = [];
+
+    for (const msg of this.history) {
+      if (msg.role !== "tool" || !msg.fileEdit) {
+        continue;
+      }
+      const previous = msg.fileEdit;
+      if (previous.applied || previous.discarded || previous.superseded) {
+        continue;
+      }
+      if (!this.isSameFilePath(previous.filePath, fileEdit.filePath)) {
+        continue;
+      }
+
+      pendingForSameFile.push(previous);
+    }
+
+    if (pendingForSameFile.length > 0) {
+      baselineOldContent = pendingForSameFile[0].oldContent;
+      for (const previous of pendingForSameFile) {
+        previous.superseded = true;
+      }
+    }
+
+    fileEdit.oldContent = baselineOldContent;
+
+    const recalculated = this.buildDiff(fileEdit.oldContent, fileEdit.newContent);
+    fileEdit.additions = recalculated.additions;
+    fileEdit.deletions = recalculated.deletions;
+    fileEdit.diffs = recalculated.diffs;
+
+    const hasNetChange = fileEdit.oldContent === null
+      ? true
+      : fileEdit.oldContent !== fileEdit.newContent;
+
+    if (!hasNetChange) {
+      // No effective workspace change left to apply/undo.
+      fileEdit.applied = true;
+      fileEdit.superseded = true;
+    }
+  }
+
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
 
@@ -135,6 +220,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "keepEdit" && typeof message.index === "number") {
       const msg = this.history[message.index];
       if (msg && msg.fileEdit) {
+        if (msg.fileEdit.superseded) {
+          return;
+        }
         msg.fileEdit.applied = true;
         this.postState();
       }
@@ -143,7 +231,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
     if (message.type === "keepAllEdits") {
       for (const msg of this.history) {
-        if (msg.role === "tool" && msg.fileEdit && !msg.fileEdit.discarded && !msg.fileEdit.applied) {
+        if (msg.role === "tool" && msg.fileEdit && !msg.fileEdit.discarded && !msg.fileEdit.applied && !msg.fileEdit.superseded) {
           msg.fileEdit.applied = true;
         }
       }
@@ -155,6 +243,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       const msg = this.history[message.index];
       if (msg && msg.fileEdit) {
         const edit = msg.fileEdit;
+        if (edit.superseded) {
+          return;
+        }
         try {
           if (edit.oldContent === null) {
             await vscode.workspace.fs.delete(vscode.Uri.file(edit.filePath));
@@ -172,7 +263,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
     if (message.type === "undoAllEdits") {
       for (const msg of this.history) {
-        if (msg.role === "tool" && msg.fileEdit && !msg.fileEdit.discarded && !msg.fileEdit.applied) {
+        if (msg.role === "tool" && msg.fileEdit && !msg.fileEdit.discarded && !msg.fileEdit.applied && !msg.fileEdit.superseded) {
           const edit = msg.fileEdit;
           try {
             if (edit.oldContent === null) {
@@ -331,6 +422,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             runNext = true;
             for (const tc of result.tool_calls) {
                const toolResult = await executeTool(tc.function.name, tc.function.arguments);
+
+               this.coalescePendingFileEdit(toolResult.fileEdit);
                
                let summaryInfo = tc.function.name;
                try {

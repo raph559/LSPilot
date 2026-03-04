@@ -176,7 +176,7 @@ export const chatWebviewScript = `
         let combinedHtml = "";
         for (const i of message._relatedIndices) {
             const m = state.messages[i];
-            if (m.name === "writeFile" && m.fileEdit) {
+            if (m.name === "writeFile" && m.fileEdit && !m.fileEdit.superseded) {
                 const fileName = (m.fileEdit.filePath || "").split(/[\\\\/]/).pop();
                 const additions = m.fileEdit.additions || 0;
                 const deletions = m.fileEdit.deletions || 0;
@@ -505,7 +505,7 @@ export const chatWebviewScript = `
       if (state.messages && state.messages.length > 0) {
          for (let i = 0; i < state.messages.length; i++) {
            const m = state.messages[i];
-           if (m.role === "tool" && m.fileEdit && !m.fileEdit.discarded && !m.fileEdit.applied) {
+           if (m.role === "tool" && m.fileEdit && !m.fileEdit.discarded && !m.fileEdit.applied && !m.fileEdit.superseded) {
               pendingIndices.push(i);
               totalAdditions += (m.fileEdit.additions || 0);
               totalDeletions += (m.fileEdit.deletions || 0);
