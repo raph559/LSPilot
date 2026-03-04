@@ -14,6 +14,21 @@ export interface LSPilotSettings {
   chatSystemPrompt: string;
 }
 
+export interface LMStudioTextPart {
+  type: "text";
+  text: string;
+}
+
+export interface LMStudioImageUrlPart {
+  type: "image_url";
+  image_url: {
+    url: string;
+    detail?: "auto" | "low" | "high";
+  };
+}
+
+export type LMStudioContentPart = LMStudioTextPart | LMStudioImageUrlPart;
+
 export interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
@@ -86,11 +101,11 @@ export interface NativeModelsResponse {
   models?: NativeModelEntry[];
 }
 
-export type LMStudioRole = "system" | "user" | "assistant";
+export type LMStudioRole = "system" | "user" | "assistant" | "tool";
 
 export interface LMStudioMessage {
   role: LMStudioRole;
-  content: string;
+  content: string | LMStudioContentPart[];
   name?: string;
   tool_calls?: Array<{
     id: string;
@@ -103,9 +118,31 @@ export interface LMStudioMessage {
   tool_call_id?: string;
 }
 
+export interface ChatImageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  sizeBytes: number;
+}
+
+export interface ChatContextBlock {
+  id: string;
+  source: "selection" | "activeFile" | "file";
+  label: string;
+  content: string;
+  filePath?: string;
+  languageId?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  truncated?: boolean;
+}
+
 export interface ChatHistoryMessage {
   role: "user" | "assistant" | "tool" | "system";
   content: string;
+  attachments?: ChatImageAttachment[];
+  contextBlocks?: ChatContextBlock[];
   thinking?: string;
   generationTimeMs?: number;
   renderedContent?: string;

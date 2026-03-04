@@ -1,8 +1,11 @@
 import * as vscode from "vscode";
 import type {
+  ChatContextBlock,
+  ChatImageAttachment,
   ChatTokenUsage,
   ChatCompletionResponse,
   ChatHistoryMessage,
+  LMStudioContentPart,
   LMStudioMessage,
   LSPilotSettings,
   ModelsResponse,
@@ -147,6 +150,86 @@ function extractTextFromMessageContent(content: unknown): string {
   }
 
   return "";
+}
+
+function clipTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return text.slice(-maxChars);
+}
+
+function serializeContextBlock(block: ChatContextBlock): string {
+  const headerParts = [block.label];
+  if (block.filePath) {
+    headerParts.push(`file=${block.filePath}`);
+  }
+  if (block.languageId) {
+    headerParts.push(`language=${block.languageId}`);
+  }
+  if (typeof block.lineStart === "number" && typeof block.lineEnd === "number") {
+    headerParts.push(`lines=${block.lineStart}-${block.lineEnd}`);
+  }
+  if (block.truncated) {
+    headerParts.push("truncated=true");
+  }
+
+  return `<context ${headerParts.join(" ")}>\n${block.content}\n</context>`;
+}
+
+function buildUserPromptText(message: ChatHistoryMessage): string {
+  const text = clipTail(typeof message.content === "string" ? message.content : "", 12_000).trim();
+  const contextBlocks = Array.isArray(message.contextBlocks) ? message.contextBlocks : [];
+  const contextText = contextBlocks.slice(0, 6).map(serializeContextBlock).join("\n\n").trim();
+
+  if (text && contextText) {
+    return `${text}\n\nAttached IDE context:\n${contextText}`;
+  }
+  if (text) {
+    return text;
+  }
+  if (contextText) {
+    return `Use this attached IDE context:\n${contextText}`;
+  }
+  return "";
+}
+
+function normalizeImageAttachments(attachments: ChatImageAttachment[] | undefined): ChatImageAttachment[] {
+  if (!Array.isArray(attachments)) {
+    return [];
+  }
+
+  return attachments
+    .filter((attachment) => !!attachment && typeof attachment === "object")
+    .filter((attachment) => typeof attachment.dataUrl === "string" && /^data:image\//i.test(attachment.dataUrl))
+    .slice(0, 6);
+}
+
+function buildUserMessageContent(message: ChatHistoryMessage): string | LMStudioContentPart[] {
+  const text = buildUserPromptText(message);
+  const attachments = normalizeImageAttachments(message.attachments);
+
+  if (attachments.length === 0) {
+    return text;
+  }
+
+  const parts: LMStudioContentPart[] = [];
+  parts.push({
+    type: "text",
+    text: text || "Please analyze the attached image(s)."
+  });
+
+  for (const attachment of attachments) {
+    parts.push({
+      type: "image_url",
+      image_url: {
+        url: attachment.dataUrl,
+        detail: "auto"
+      }
+    });
+  }
+
+  return parts;
 }
 
 function parseThinkTaggedText(rawText: string): { text: string; reasoning?: string } {
@@ -1291,7 +1374,10 @@ export class LMStudioClient {
     }
 
     const thinkingRequested = options?.enableThinking !== false;
-    if (!thinkingRequested) {
+    const hasImageAttachments = contextualHistory.some(
+      (msg) => msg.role === "user" && normalizeImageAttachments(msg.attachments).length > 0
+    );
+    if (!thinkingRequested && !hasImageAttachments) {
       return this.generateReasoningOffChatResponse(contextualHistory, model, settings, token);
     }
 
@@ -1299,13 +1385,26 @@ export class LMStudioClient {
     const detectedContext = await this.detectModelContextWindowTokens(token);
     const maxTokensToUse = detectedContext && detectedContext > 0 ? detectedContext : -1;
 
-    const messages = [
+    const messages: LMStudioMessage[] = [
       { role: "system", content: settings.chatSystemPrompt },
-      ...contextualHistory.map((message) => {
-        const msg: any = { role: message.role };
-        if (message.content != null && message.content !== "") {
-          msg.content = message.content.slice(-12000);
+      ...contextualHistory.map((message): LMStudioMessage => {
+        const msg: LMStudioMessage = {
+          role: message.role,
+          content: ""
+        };
+
+        if (message.role === "user") {
+          const userContent = buildUserMessageContent(message);
+          if (typeof userContent === "string") {
+            msg.content = userContent || "Continue.";
+          } else {
+            msg.content = userContent.length > 0 ? userContent : [{ type: "text", text: "Continue." }];
+          }
+        } else {
+          const text = clipTail(typeof message.content === "string" ? message.content : "", 12_000).trim();
+          msg.content = text || "(empty)";
         }
+
         if (message.tool_calls) {
           msg.tool_calls = message.tool_calls;
         }
@@ -1315,17 +1414,19 @@ export class LMStudioClient {
         if (message.tool_call_id) {
           msg.tool_call_id = message.tool_call_id;
         }
-        return msg;
+        return msg as LMStudioMessage;
       })
     ];
 
     const requestBody: Record<string, unknown> = {
       model,
       messages,
-      tools,
       max_tokens: maxTokensToUse,
       temperature: settings.temperature
     };
+    if (thinkingRequested && Array.isArray(tools) && tools.length > 0) {
+      requestBody.tools = tools;
+    }
     // /v1/chat/completions in LM Studio follows OpenAI-compatible fields.
 
     const runRequest = async (body: Record<string, unknown>): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> => {
@@ -1346,7 +1447,10 @@ export class LMStudioClient {
       if (msg.role !== "user") {
         continue;
       }
-      const trimmed = typeof msg.content === "string" ? msg.content.trim() : "";
+      let trimmed = buildUserPromptText(msg).trim();
+      if (!trimmed && normalizeImageAttachments(msg.attachments).length > 0) {
+        trimmed = "[User attached image(s)]";
+      }
       if (trimmed.length > 0) {
         return trimmed.slice(-12_000);
       }
@@ -1365,8 +1469,11 @@ export class LMStudioClient {
       if (msg.role === "tool") {
         continue;
       }
-      const raw = typeof msg.content === "string" ? msg.content.trim() : "";
+      const raw = msg.role === "user" ? buildUserPromptText(msg).trim() : (typeof msg.content === "string" ? msg.content.trim() : "");
       if (!raw) {
+        if (msg.role === "user" && normalizeImageAttachments(msg.attachments).length > 0) {
+          transcriptLines.push("USER: [Attached image(s)]");
+        }
         continue;
       }
       const clipped = raw.length > 2_000 ? `${raw.slice(-2_000)}\n...[truncated]` : raw;

@@ -55,15 +55,14 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg);
+      gap: 8px;
+      padding: 6px 12px;
+      background: transparent;
       z-index: 10;
     }
     .model {
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 500;
       white-space: nowrap;
       overflow: hidden;
@@ -116,25 +115,27 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       transition: all 0.2s;
     }
     button:hover { background: var(--btn-hover); }
-    button.secondary { background: transparent; border-color: var(--border); color: var(--fg); }
-    button.secondary:hover { background: var(--user-bg); border-color: var(--muted); }
+    button.secondary { background: transparent; border-color: transparent; color: var(--fg); padding: 4px; }
+    button.secondary:hover { background: var(--user-bg); border-color: transparent; }
+    button.icon-only { width: 24px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; border: none; }
+    button.icon-only i { font-size: 14px; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .icon-toggle {
-      width: 28px;
-      height: 28px;
+      width: 24px;
+      height: 24px;
       padding: 0;
-      border-radius: 6px;
+      border-radius: 4px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       background: transparent;
-      border: 1px solid var(--border);
+      border: 1px solid transparent;
       color: var(--muted);
       position: relative;
       line-height: 1;
       transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     }
-    .icon-toggle i { font-size: 15px; }
+    .icon-toggle i { font-size: 14px; }
     .icon-toggle:hover:not(:disabled) {
       background: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent));
       color: var(--fg);
@@ -188,50 +189,87 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     #messages {
       flex: 1;
       overflow-y: auto;
-      padding: 20px 16px;
+      padding: 12px 16px;
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 24px;
       scroll-behavior: smooth;
     }
     .msg-wrapper {
       display: flex;
       flex-direction: column;
-      max-width: 90%;
+      max-width: 100%;
     }
-    .msg-wrapper.user { align-self: flex-end; }
-    .msg-wrapper.assistant { align-self: flex-start; }
-    .msg-wrapper.tool { align-self: flex-start; width: 100%; margin-top: -8px; }
+    .msg-wrapper.user { align-self: flex-end; max-width: 85%; }
+    .msg-wrapper.assistant { align-self: flex-start; max-width: 100%; }
+    .msg-wrapper.tool { align-self: flex-start; width: 100%; margin-top: -12px; margin-left: 12px; }
     .msg-wrapper.tool .role { display: none; }
 
     .role {
-      color: var(--muted);
-      font-size: 11px;
-      margin-bottom: 6px;
+      color: var(--fg);
+      font-size: 12px;
+      margin-bottom: 4px;
       text-transform: capitalize;
       font-weight: 600;
       display: flex;
       align-items: center;
       gap: 6px;
     }
-    .msg-wrapper.user .role { justify-content: flex-end; }
+    .msg-wrapper.user .role { display: none; }
 
     .msg {
       border-radius: var(--border-radius);
-      padding: 12px 14px;
+      padding: 8px 0;
       line-height: 1.5;
       font-size: 13px;
       word-break: break-word;
       position: relative;
     }
     .msg.user {
-      background: var(--user-bg);
+      background: var(--vscode-editorGroupHeader-tabsBackground, var(--user-bg));
+      padding: 10px 14px;
+      border-radius: 12px;
       border-bottom-right-radius: 4px;
     }
     .msg.assistant {
-      background: var(--assistant-bg);
-      border-bottom-left-radius: 4px;
+      background: transparent;
+      padding: 0;
+      border: none;
+    }
+    .msg-user-images {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .msg-user-image {
+      width: 36px;
+      height: 36px;
+      object-fit: cover;
       border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--input-bg);
+    }
+    .msg-user-context {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .msg-user-context-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      background: color-mix(in srgb, var(--assistant-bg) 40%, transparent);
+      max-width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .msg.tool-msg-container {
       background: transparent;
@@ -586,29 +624,123 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     
     .composer {
       padding: 16px;
-      border-top: 1px solid var(--border);
-      background: var(--bg);
+      padding-top: 0;
+      background: transparent;
       z-index: 10;
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+    .attachments-area {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .context-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      width: 100%;
+    }
+    .context-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: color-mix(in srgb, var(--assistant-bg) 35%, transparent);
+      color: var(--fg);
+      font-size: 11px;
+      max-width: 100%;
+    }
+    .context-chip-label {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 240px;
+    }
+    .chip-remove {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .chip-remove:hover {
+      background: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent));
+      color: var(--fg);
+    }
+    .image-preview {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      width: 100%;
+    }
+    .image-preview-item {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      overflow: visible;
+      background: var(--input-bg);
+    }
+    .image-preview-item img {
+      width: 100%;
+      height: 100%;
+      border-radius: 4px;
+      object-fit: cover;
+      display: block;
+    }
+    .image-preview-remove {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      width: 14px;
+      height: 14px;
+      border: none;
+      border-radius: 999px;
+      padding: 0;
+      background: var(--vscode-editor-background);
+      border: 1px solid var(--vscode-editor-foreground);
+      color: var(--fg);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      line-height: 1;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+    .image-preview-item:hover .image-preview-remove {
+      opacity: 1;
     }
     .input-wrapper {
       position: relative;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      background: var(--input-bg);
+      background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-input-border, var(--border));
-      border-radius: var(--border-radius);
-      padding: 8px;
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-top: 4px;
     }
     .input-wrapper:focus-within {
       border-color: var(--vscode-focusBorder);
+      outline: 1px solid var(--vscode-focusBorder);
     }
     textarea {
       width: 100%;
-      min-height: 44px;
+      min-height: 24px;
       max-height: 200px;
       border: none;
       background: transparent;
@@ -617,7 +749,7 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       font-size: 13px;
       resize: none;
       outline: none;
-      padding: 4px;
+      padding: 4px 0;
       line-height: 1.4;
     }
     textarea::placeholder { color: var(--muted); }
@@ -626,13 +758,16 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0 4px;
+      padding-top: 4px;
     }
-    .hint {
-      color: var(--muted);
-      font-size: 11px;
-      opacity: 0.7;
+    .left-actions, .right-actions {
+      display: flex;
+      gap: 4px;
     }
+    .icon-toggle.send-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-radius: 6px; }
+    .icon-toggle.send-btn:hover { background: var(--vscode-button-hoverBackground); }
+    .icon-toggle.stop-btn { background: var(--vscode-errorForeground, #d64545); color: white; border-radius: 6px; }
+    .icon-toggle.stop-btn:hover { opacity: 0.9; }
     
     /* Scoped GitHub overrides */
     .markdown-body a { color: var(--vscode-textLink-foreground) !important; }

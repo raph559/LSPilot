@@ -59,7 +59,7 @@ md.renderer.rules.fence = function (tokens: any[], idx: number, options: any, en
 };
 
 import { LMStudioClient } from "../client/lmStudioClient";
-import type { ChatContextUsage, ChatHistoryMessage, ChatTokenUsage } from "../types";
+import type { ChatContextBlock, ChatContextUsage, ChatHistoryMessage, ChatImageAttachment, ChatTokenUsage } from "../types";
 import { createChatWebviewHtml } from "./webviewHtml";
 import { toolsDefinition, executeTool } from "./tools";
 import { LSPilotDiffProvider } from "./lspilotDiffProvider";
@@ -81,8 +81,278 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private modelSupportsThinking = false;
   private thinkingSupportProbeInFlight = false;
   private lastThinkingSupportModel: string | undefined;
+  private pendingContextBlocks: ChatContextBlock[] = [];
+
+  private static readonly maxImageAttachmentsPerTurn = 6;
+  private static readonly maxImageSizeBytes = 8 * 1024 * 1024;
+  private static readonly maxContextBlocksPerTurn = 6;
+  private static readonly maxSelectionContextChars = 12_000;
+  private static readonly maxFileContextChars = 18_000;
 
   public constructor(private readonly client: LMStudioClient, private readonly extensionUri: vscode.Uri) {}
+
+  private estimateDataUrlSizeBytes(dataUrl: string): number {
+    const commaIndex = dataUrl.indexOf(",");
+    if (commaIndex < 0) {
+      return dataUrl.length;
+    }
+    const base64Payload = dataUrl.slice(commaIndex + 1);
+    return Math.floor((base64Payload.length * 3) / 4);
+  }
+
+  private parseIncomingImageAttachments(rawImages: unknown): ChatImageAttachment[] {
+    if (!Array.isArray(rawImages)) {
+      return [];
+    }
+
+    const attachments: ChatImageAttachment[] = [];
+    for (const rawImage of rawImages) {
+      if (attachments.length >= LSPilotChatViewProvider.maxImageAttachmentsPerTurn) {
+        break;
+      }
+
+      if (!rawImage || typeof rawImage !== "object") {
+        continue;
+      }
+
+      const image = rawImage as {
+        id?: unknown;
+        name?: unknown;
+        mimeType?: unknown;
+        dataUrl?: unknown;
+        sizeBytes?: unknown;
+      };
+
+      const dataUrl = typeof image.dataUrl === "string" ? image.dataUrl : "";
+      if (!/^data:image\//i.test(dataUrl)) {
+        continue;
+      }
+
+      const mimeType = typeof image.mimeType === "string" && image.mimeType.startsWith("image/")
+        ? image.mimeType
+        : "image/png";
+      const sizeBytes = typeof image.sizeBytes === "number" && Number.isFinite(image.sizeBytes) && image.sizeBytes > 0
+        ? Math.floor(image.sizeBytes)
+        : this.estimateDataUrlSizeBytes(dataUrl);
+      if (sizeBytes > LSPilotChatViewProvider.maxImageSizeBytes) {
+        continue;
+      }
+
+      const safeName = typeof image.name === "string" && image.name.trim().length > 0
+        ? path.basename(image.name.trim())
+        : "image";
+      const safeId = typeof image.id === "string" && image.id.trim().length > 0
+        ? image.id.trim()
+        : `${Date.now()}-${attachments.length}`;
+
+      attachments.push({
+        id: safeId,
+        name: safeName,
+        mimeType,
+        dataUrl,
+        sizeBytes
+      });
+    }
+
+    return attachments;
+  }
+
+  private trimContextText(text: string, maxChars: number): { content: string; truncated: boolean } {
+    if (text.length <= maxChars) {
+      return { content: text, truncated: false };
+    }
+    return {
+      content: `${text.slice(0, maxChars)}\n...[truncated]`,
+      truncated: true
+    };
+  }
+
+  private getDisplayPath(uri: vscode.Uri): string {
+    if (uri.scheme === "file") {
+      return vscode.workspace.asRelativePath(uri, false);
+    }
+    return `${uri.scheme}:${uri.path}`;
+  }
+
+  private createSelectionContextBlock(editor: vscode.TextEditor): ChatContextBlock | undefined {
+    const selection = editor.selection;
+    if (selection.isEmpty) {
+      return undefined;
+    }
+
+    const raw = editor.document.getText(selection).trim();
+    if (!raw) {
+      return undefined;
+    }
+
+    const lineStart = selection.start.line + 1;
+    const lineEnd = selection.end.line + 1;
+    const displayPath = this.getDisplayPath(editor.document.uri);
+    const trimmed = this.trimContextText(raw, LSPilotChatViewProvider.maxSelectionContextChars);
+
+    return {
+      id: `selection:${editor.document.uri.toString()}:${lineStart}:${lineEnd}`,
+      source: "selection",
+      label: `Selection ${path.basename(displayPath)}:${lineStart}-${lineEnd}`,
+      content: trimmed.content,
+      filePath: displayPath,
+      languageId: editor.document.languageId,
+      lineStart,
+      lineEnd,
+      truncated: trimmed.truncated
+    };
+  }
+
+  private createActiveFileContextBlock(editor: vscode.TextEditor): ChatContextBlock | undefined {
+    const document = editor.document;
+    const lineCount = document.lineCount;
+    if (lineCount === 0) {
+      return undefined;
+    }
+
+    const cursorLine = editor.selection.active.line;
+    const startLine = Math.max(0, cursorLine - 120);
+    const endLine = Math.min(lineCount - 1, cursorLine + 120);
+    const range = new vscode.Range(startLine, 0, endLine, document.lineAt(endLine).range.end.character);
+    const raw = document.getText(range).trim();
+    if (!raw) {
+      return undefined;
+    }
+
+    const trimmed = this.trimContextText(raw, LSPilotChatViewProvider.maxFileContextChars);
+    const displayPath = this.getDisplayPath(document.uri);
+
+    return {
+      id: `active-file:${document.uri.toString()}:${startLine + 1}:${endLine + 1}`,
+      source: "activeFile",
+      label: `Active file ${path.basename(displayPath)}:${startLine + 1}-${endLine + 1}`,
+      content: trimmed.content,
+      filePath: displayPath,
+      languageId: document.languageId,
+      lineStart: startLine + 1,
+      lineEnd: endLine + 1,
+      truncated: trimmed.truncated
+    };
+  }
+
+  private createFullFileContextBlock(editor: vscode.TextEditor): ChatContextBlock | undefined {
+    const document = editor.document;
+    const raw = document.getText().trim();
+    if (!raw) {
+      return undefined;
+    }
+
+    const trimmed = this.trimContextText(raw, LSPilotChatViewProvider.maxFileContextChars);
+    const displayPath = this.getDisplayPath(document.uri);
+
+    return {
+      id: `file:${document.uri.toString()}`,
+      source: "file",
+      label: `File ${path.basename(displayPath)}`,
+      content: trimmed.content,
+      filePath: displayPath,
+      languageId: document.languageId,
+      lineStart: 1,
+      lineEnd: document.lineCount,
+      truncated: trimmed.truncated
+    };
+  }
+
+  private collectAutomaticContextBlocks(): ChatContextBlock[] {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return [];
+    }
+
+    const selectionBlock = this.createSelectionContextBlock(editor);
+    if (selectionBlock) {
+      return [selectionBlock];
+    }
+
+    const fileBlock = this.createActiveFileContextBlock(editor);
+    return fileBlock ? [fileBlock] : [];
+  }
+
+  private async promptAndAddContext(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage("Open a file to attach context.");
+      return;
+    }
+
+    const candidates: Array<vscode.QuickPickItem & { block: ChatContextBlock }> = [];
+    const selectionBlock = this.createSelectionContextBlock(editor);
+    if (selectionBlock) {
+      candidates.push({
+        label: "Selection",
+        description: selectionBlock.label,
+        detail: selectionBlock.truncated ? "Selection clipped to fit context budget." : undefined,
+        block: selectionBlock
+      });
+    }
+
+    const activeFileBlock = this.createActiveFileContextBlock(editor);
+    if (activeFileBlock) {
+      candidates.push({
+        label: "Active File Excerpt",
+        description: activeFileBlock.label,
+        detail: activeFileBlock.truncated ? "Excerpt clipped to fit context budget." : undefined,
+        block: activeFileBlock
+      });
+    }
+
+    const fullFileBlock = this.createFullFileContextBlock(editor);
+    if (fullFileBlock) {
+      candidates.push({
+        label: "Whole Active File",
+        description: fullFileBlock.label,
+        detail: fullFileBlock.truncated ? "File clipped to fit context budget." : undefined,
+        block: fullFileBlock
+      });
+    }
+
+    if (candidates.length === 0) {
+      vscode.window.showInformationMessage("No editor text available to attach as context.");
+      return;
+    }
+
+    const picks = await vscode.window.showQuickPick(candidates, {
+      canPickMany: true,
+      title: "Add Context To Next Message",
+      placeHolder: "Pick context to attach"
+    });
+
+    if (!picks || picks.length === 0) {
+      return;
+    }
+
+    const next = [...this.pendingContextBlocks];
+    for (const pick of picks) {
+      const existingIndex = next.findIndex((block) => block.id === pick.block.id);
+      if (existingIndex >= 0) {
+        next[existingIndex] = pick.block;
+      } else if (next.length < LSPilotChatViewProvider.maxContextBlocksPerTurn) {
+        next.push(pick.block);
+      }
+    }
+
+    this.pendingContextBlocks = next;
+    this.postState();
+  }
+
+  private estimateUserPromptChars(message: ChatHistoryMessage): number {
+    let total = message.content?.length || 0;
+    if (Array.isArray(message.contextBlocks)) {
+      for (const block of message.contextBlocks) {
+        total += (block.label?.length || 0) + (block.content?.length || 0) + 48;
+      }
+    }
+    if (Array.isArray(message.attachments) && message.attachments.length > 0) {
+      // Vision payloads add non-trivial tokens even without OCR text.
+      total += message.attachments.length * 80;
+    }
+    return total;
+  }
 
   private isSameFilePath(a: string, b: string): boolean {
     const normalizedA = path.normalize(a);
@@ -209,6 +479,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.busyStartTimeMs = undefined;
     this.busy = false;
     this.history = [];
+    this.pendingContextBlocks = [];
     this.lastTokenUsage = undefined;
     this.client.resetReasoningOffSession();
     this.postState();
@@ -223,7 +494,15 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const message = rawMessage as { type?: string; text?: unknown; index?: number; enableThinking?: unknown; enabled?: unknown };
+    const message = rawMessage as {
+      type?: string;
+      text?: unknown;
+      index?: number;
+      enableThinking?: unknown;
+      enabled?: unknown;
+      images?: unknown;
+      contextId?: unknown;
+    };
 
     if (message.type === "ready") {
       this.postState();
@@ -331,6 +610,28 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message.type === "addContext") {
+      await this.promptAndAddContext();
+      return;
+    }
+
+    if (message.type === "removeContext" && typeof message.contextId === "string") {
+      const before = this.pendingContextBlocks.length;
+      this.pendingContextBlocks = this.pendingContextBlocks.filter((block) => block.id !== message.contextId);
+      if (this.pendingContextBlocks.length !== before) {
+        this.postState();
+      }
+      return;
+    }
+
+    if (message.type === "clearContext") {
+      if (this.pendingContextBlocks.length > 0) {
+        this.pendingContextBlocks = [];
+        this.postState();
+      }
+      return;
+    }
+
     if (message.type === "selectModel") {
       await vscode.commands.executeCommand("lspilot.selectModel");
       return;
@@ -361,13 +662,19 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "send" && typeof message.text === "string") {
       const requestedThinking = typeof message.enableThinking === "boolean" ? message.enableThinking : this.thinkingEnabled;
       const shouldEnableThinking = requestedThinking;
-      await this.sendUserMessage(message.text, shouldEnableThinking);
+      const attachments = this.parseIncomingImageAttachments(message.images);
+      await this.sendUserMessage(message.text, shouldEnableThinking, attachments);
     }
   }
 
-  private async sendUserMessage(text: string, enableThinking: boolean): Promise<void> {
+  private async sendUserMessage(text: string, enableThinking: boolean, attachments: ChatImageAttachment[] = []): Promise<void> {
     const trimmed = text.trim();
-    if (!trimmed) {
+    const manualContext = [...this.pendingContextBlocks];
+    const automaticContext = manualContext.length === 0 ? this.collectAutomaticContextBlocks() : [];
+    const contextBlocks = (manualContext.length > 0 ? manualContext : automaticContext)
+      .slice(0, LSPilotChatViewProvider.maxContextBlocksPerTurn);
+
+    if (!trimmed && attachments.length === 0 && contextBlocks.length === 0) {
       return;
     }
 
@@ -376,7 +683,13 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    this.history.push({ role: "user", content: trimmed });
+    this.history.push({
+      role: "user",
+      content: trimmed,
+      attachments: attachments.length > 0 ? attachments : undefined,
+      contextBlocks: contextBlocks.length > 0 ? contextBlocks : undefined
+    });
+    this.pendingContextBlocks = [];
     this.history = this.history.slice(-30);
 
     const startTimeMs = Date.now();
@@ -634,6 +947,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       thinkingEnabled: this.thinkingEnabled,
       thinkingSupported: this.modelSupportsThinking,
       messages: renderedMessages,
+      pendingContextBlocks: this.pendingContextBlocks,
       contextUsage
     });
   }
@@ -669,7 +983,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         if (this.history.length >= 2) {
           const preMsg = this.history[this.history.length - 2];
           if (preMsg.role === "user") {
-            extraUserLen = preMsg.content?.length || 0;
+            extraUserLen = this.estimateUserPromptChars(preMsg);
           }
         }
         

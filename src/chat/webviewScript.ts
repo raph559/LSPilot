@@ -5,6 +5,11 @@ export const chatWebviewScript = `
     const sendBtn = document.getElementById("send");
     const stopBtn = document.getElementById("stop");
     const thinkingToggleBtn = document.getElementById("thinkingToggle");
+    const addContextBtn = document.getElementById("addContext");
+    const attachImageBtn = document.getElementById("attachImage");
+    const imageInputEl = document.getElementById("imageInput");
+    const imagePreviewEl = document.getElementById("imagePreview");
+    const contextChipsEl = document.getElementById("contextChips");
     const clearBtn = document.getElementById("clear");
     const selectModelBtn = document.getElementById("selectModel");
     const modelEl = document.getElementById("model");
@@ -12,10 +17,13 @@ export const chatWebviewScript = `
     const contextLabelEl = document.getElementById("contextLabel");
     const contextFillEl = document.getElementById("contextFill");
 
-    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined };
+    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [] };
     let timerInterval = null;
     let promptHistory = [];
     let promptHistoryIndex = -1;
+    let pendingImages = [];
+    const MAX_ATTACHMENTS = 6;
+    const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
     function formatTime(ms) {
       if (!ms || ms < 0) return "0.0s";
@@ -26,6 +34,177 @@ export const chatWebviewScript = `
       const activeTimer = document.getElementById("active-timer");
       if (activeTimer && state.busyStartTimeMs) {
         activeTimer.textContent = formatTime(Date.now() - state.busyStartTimeMs);
+      }
+    }
+
+    function estimateDataUrlSize(dataUrl) {
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) return dataUrl.length;
+      const b64 = dataUrl.slice(comma + 1);
+      return Math.floor((b64.length * 3) / 4);
+    }
+
+    function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+        reader.onerror = () => reject(reader.error || new Error("Failed to read file"));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function downscaleDataUrl(dataUrl, mimeType) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const maxSide = 1568;
+          const width = img.width || 1;
+          const height = img.height || 1;
+          const scale = Math.min(1, maxSide / Math.max(width, height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(width * scale));
+          canvas.height = Math.max(1, Math.round(height * scale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            resolve(dataUrl);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const targetMime = mimeType && mimeType.startsWith("image/") ? mimeType : "image/jpeg";
+          const compressed = canvas.toDataURL(targetMime === "image/png" ? "image/png" : "image/jpeg", 0.84);
+          resolve(compressed || dataUrl);
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      });
+    }
+
+    async function normalizeImageAttachment(file) {
+      if (!file || !file.type || !file.type.startsWith("image/")) {
+        return null;
+      }
+
+      let dataUrl = await readFileAsDataUrl(file);
+      if (!dataUrl || !dataUrl.startsWith("data:image/")) {
+        return null;
+      }
+
+      let sizeBytes = estimateDataUrlSize(dataUrl);
+      if (sizeBytes > MAX_IMAGE_BYTES) {
+        dataUrl = await downscaleDataUrl(dataUrl, file.type);
+        sizeBytes = estimateDataUrlSize(dataUrl);
+      }
+      if (sizeBytes > MAX_IMAGE_BYTES) {
+        return null;
+      }
+
+      return {
+        id: String(Date.now()) + "-" + Math.random().toString(36).slice(2, 9),
+        name: file.name || "image",
+        mimeType: file.type || "image/png",
+        dataUrl,
+        sizeBytes
+      };
+    }
+
+    function extractClipboardImages(clipboardData) {
+      if (!clipboardData) {
+        return [];
+      }
+
+      const images = [];
+
+      if (clipboardData.items && clipboardData.items.length > 0) {
+        for (const item of clipboardData.items) {
+          if (!item || item.kind !== "file" || !item.type || !item.type.startsWith("image/")) {
+            continue;
+          }
+          const file = item.getAsFile();
+          if (file) {
+            images.push(file);
+          }
+        }
+      }
+
+      if (images.length === 0 && clipboardData.files && clipboardData.files.length > 0) {
+        for (const file of clipboardData.files) {
+          if (file && file.type && file.type.startsWith("image/")) {
+            images.push(file);
+          }
+        }
+      }
+
+      return images;
+    }
+
+    function renderPendingImages() {
+      if (!imagePreviewEl) return;
+      imagePreviewEl.innerHTML = "";
+
+      if (!pendingImages.length) {
+        imagePreviewEl.classList.add("hidden");
+        return;
+      }
+
+      imagePreviewEl.classList.remove("hidden");
+      for (const image of pendingImages) {
+        const item = document.createElement("div");
+        item.className = "image-preview-item";
+        item.dataset.id = image.id;
+
+        const img = document.createElement("img");
+        img.src = image.dataUrl;
+        img.alt = image.name || "Attached image";
+        item.appendChild(img);
+
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "image-preview-remove";
+        removeBtn.title = "Remove image";
+        removeBtn.setAttribute("aria-label", "Remove image");
+        removeBtn.dataset.action = "removeImage";
+        removeBtn.dataset.id = image.id;
+        removeBtn.textContent = "x";
+        item.appendChild(removeBtn);
+
+        imagePreviewEl.appendChild(item);
+      }
+    }
+
+    function renderPendingContextChips() {
+      if (!contextChipsEl) return;
+      contextChipsEl.innerHTML = "";
+
+      const blocks = Array.isArray(state.pendingContextBlocks) ? state.pendingContextBlocks : [];
+      if (!blocks.length) {
+        contextChipsEl.classList.add("hidden");
+        return;
+      }
+
+      contextChipsEl.classList.remove("hidden");
+      for (const block of blocks) {
+        const chip = document.createElement("div");
+        chip.className = "context-chip";
+
+        const icon = document.createElement("i");
+        icon.className = "codicon codicon-file-code";
+        icon.style.fontSize = "12px";
+        chip.appendChild(icon);
+
+        const label = document.createElement("span");
+        label.className = "context-chip-label";
+        label.textContent = block.label || "Context";
+        chip.appendChild(label);
+
+        const remove = document.createElement("button");
+        remove.className = "chip-remove";
+        remove.title = "Remove context";
+        remove.setAttribute("aria-label", "Remove context");
+        remove.dataset.action = "removeContext";
+        remove.dataset.id = block.id;
+        remove.textContent = "x";
+        chip.appendChild(remove);
+
+        contextChipsEl.appendChild(chip);
       }
     }
 
@@ -151,6 +330,28 @@ export const chatWebviewScript = `
           wrapper.appendChild(contentEl);
         }
       }
+
+      let userImagesEl = wrapper.querySelector(".msg-user-images");
+      if (message.role === "user" && Array.isArray(message.attachments) && message.attachments.length > 0) {
+        if (!userImagesEl) {
+          userImagesEl = document.createElement("div");
+          userImagesEl.className = "msg-user-images";
+          wrapper.insertBefore(userImagesEl, contentEl);
+        }
+        userImagesEl.innerHTML = "";
+        for (const image of message.attachments) {
+          if (!image || typeof image.dataUrl !== "string" || !image.dataUrl.startsWith("data:image/")) {
+            continue;
+          }
+          const img = document.createElement("img");
+          img.className = "msg-user-image";
+          img.src = image.dataUrl;
+          img.alt = image.name || "Attached image";
+          userImagesEl.appendChild(img);
+        }
+      } else if (userImagesEl) {
+        userImagesEl.remove();
+      }
       
       let targetContentHTML = "";
       if (typeof message.renderedContent === "string" && message.renderedContent.length > 0) {
@@ -250,12 +451,33 @@ export const chatWebviewScript = `
         }
       }
 
+      let userContextEl = wrapper.querySelector(".msg-user-context");
+      if (message.role === "user" && Array.isArray(message.contextBlocks) && message.contextBlocks.length > 0) {
+        if (!userContextEl) {
+          userContextEl = document.createElement("div");
+          userContextEl.className = "msg-user-context";
+          wrapper.appendChild(userContextEl);
+        }
+        userContextEl.innerHTML = "";
+        for (const block of message.contextBlocks) {
+          const item = document.createElement("span");
+          item.className = "msg-user-context-item";
+          item.title = block.label || "Context";
+          item.textContent = block.label || "Context";
+          userContextEl.appendChild(item);
+        }
+      } else if (userContextEl) {
+        userContextEl.remove();
+      }
+
       // Hide completely if empty (assistant/user with no text, not thinking)
       if (message.role !== "tool") {
         const hasContent = targetContentHTML.trim().length > 0;
         const hasThinking = typeof message.thinking === "string" && message.thinking.length > 0;
+        const hasImages = Array.isArray(message.attachments) && message.attachments.length > 0;
+        const hasContext = Array.isArray(message.contextBlocks) && message.contextBlocks.length > 0;
         
-        if (!hasContent && !hasThinking) {
+        if (!hasContent && !hasThinking && !hasImages && !hasContext) {
           outerWrapper.style.display = "none";
         } else {
           outerWrapper.style.display = "flex";
@@ -344,6 +566,15 @@ export const chatWebviewScript = `
       sendBtn.disabled = state.busy || noModel || state.modelLoading;
       const thinkingDisabled = state.busy || noModel || state.modelLoading;
       thinkingToggleBtn.disabled = thinkingDisabled;
+      if (addContextBtn) {
+        addContextBtn.disabled = state.busy || noModel || state.modelLoading;
+      }
+      if (attachImageBtn) {
+        attachImageBtn.disabled = state.busy || noModel || state.modelLoading;
+      }
+      if (imageInputEl) {
+        imageInputEl.disabled = state.busy || noModel || state.modelLoading;
+      }
       thinkingToggleBtn.classList.toggle("active", !!state.thinkingEnabled);
       thinkingToggleBtn.classList.toggle("supported-off", modelSupportsThinking && !state.thinkingEnabled);
       thinkingToggleBtn.classList.toggle("unsupported", !noModel && !modelSupportsThinking);
@@ -371,9 +602,9 @@ export const chatWebviewScript = `
       }
 
       if (state.modelLoading) {
-        sendBtn.textContent = "Loading...";
+        sendBtn.innerHTML = '<i class="codicon codicon-loading codicon-modifier-spin"></i>';
       } else {
-        sendBtn.textContent = "Send";
+        sendBtn.innerHTML = '<i class="codicon codicon-send"></i>';
       }
 
       inputEl.disabled = noModel;
@@ -410,22 +641,42 @@ export const chatWebviewScript = `
           timerInterval = null;
         }
       }
+
+      renderPendingContextChips();
+      renderPendingImages();
     }
 
     function sendInput() {
       const text = inputEl.value.trim();
       const noModel = !state.modelLabel || state.modelLabel === "None";
-      if (!text || state.busy || state.modelLoading || noModel) {
+      const hasImages = pendingImages.length > 0;
+      const hasContext = Array.isArray(state.pendingContextBlocks) && state.pendingContextBlocks.length > 0;
+      if ((!text && !hasImages && !hasContext) || state.busy || state.modelLoading || noModel) {
         return;
       }
 
-      promptHistory.push(text);
-      promptHistoryIndex = promptHistory.length;
+      if (text) {
+        promptHistory.push(text);
+        promptHistoryIndex = promptHistory.length;
+      }
+
+      const imagesPayload = pendingImages.map((image) => ({
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        dataUrl: image.dataUrl,
+        sizeBytes: image.sizeBytes
+      }));
+      pendingImages = [];
+      if (imageInputEl) {
+        imageInputEl.value = "";
+      }
 
       // Auto-resize reset
       inputEl.style.height = 'auto';
       inputEl.value = "";
-      vscode.postMessage({ type: "send", text, enableThinking: !!state.thinkingEnabled });
+      renderPendingImages();
+      vscode.postMessage({ type: "send", text, images: imagesPayload, enableThinking: !!state.thinkingEnabled });
     }
 
     // Auto-resize textarea
@@ -433,8 +684,72 @@ export const chatWebviewScript = `
       this.style.height = 'auto';
       this.style.height = (this.scrollHeight) + 'px';
     });
+    inputEl.addEventListener("paste", async (event) => {
+      const imageFiles = extractClipboardImages(event.clipboardData);
+      if (!imageFiles.length) {
+        return;
+      }
+
+      event.preventDefault();
+
+      let changed = false;
+      for (const file of imageFiles) {
+        if (pendingImages.length >= MAX_ATTACHMENTS) {
+          break;
+        }
+
+        const normalized = await normalizeImageAttachment(file);
+        if (!normalized) {
+          continue;
+        }
+
+        pendingImages.push(normalized);
+        changed = true;
+      }
+
+      if (changed) {
+        renderPendingImages();
+      }
+    });
 
     sendBtn.addEventListener("click", sendInput);
+    if (addContextBtn) {
+      addContextBtn.addEventListener("click", () => {
+        const noModel = !state.modelLabel || state.modelLabel === "None";
+        if (state.busy || state.modelLoading || noModel) {
+          return;
+        }
+        vscode.postMessage({ type: "addContext" });
+      });
+    }
+    if (attachImageBtn && imageInputEl) {
+      attachImageBtn.addEventListener("click", () => {
+        const noModel = !state.modelLabel || state.modelLabel === "None";
+        if (state.busy || state.modelLoading || noModel) {
+          return;
+        }
+        imageInputEl.click();
+      });
+      imageInputEl.addEventListener("change", async () => {
+        const fileList = imageInputEl.files ? Array.from(imageInputEl.files) : [];
+        if (!fileList.length) {
+          return;
+        }
+
+        for (const file of fileList) {
+          if (pendingImages.length >= MAX_ATTACHMENTS) {
+            break;
+          }
+          const normalized = await normalizeImageAttachment(file);
+          if (!normalized) {
+            continue;
+          }
+          pendingImages.push(normalized);
+        }
+
+        renderPendingImages();
+      });
+    }
     thinkingToggleBtn.addEventListener("click", () => {
       const noModel = !state.modelLabel || state.modelLabel === "None";
       if (state.busy || state.modelLoading || noModel) {
@@ -446,7 +761,14 @@ export const chatWebviewScript = `
       vscode.postMessage({ type: "toggleThinking", enabled: nextEnabled });
     });
     stopBtn.addEventListener("click", () => vscode.postMessage({ type: "stop" }));
-    clearBtn.addEventListener("click", () => vscode.postMessage({ type: "clear" }));
+    clearBtn.addEventListener("click", () => {
+      pendingImages = [];
+      if (imageInputEl) {
+        imageInputEl.value = "";
+      }
+      renderPendingImages();
+      vscode.postMessage({ type: "clear" });
+    });
     selectModelBtn.addEventListener("click", () => vscode.postMessage({ type: "selectModel" }));
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -505,16 +827,31 @@ export const chatWebviewScript = `
       });
     };
 
-    // Global click delegate for dynamically rendered action cards (Diff / Open File)
+    // Global click delegate for dynamically rendered action cards/chips.
     document.addEventListener("click", (event) => {
        const target = event.target.closest('[data-action]');
        if (!target) return;
 
        const action = target.getAttribute('data-action');
+       if (action === "removeImage") {
+          const id = target.getAttribute("data-id");
+          if (!id) return;
+          pendingImages = pendingImages.filter((image) => image.id !== id);
+          renderPendingImages();
+          return;
+       }
+       if (action === "removeContext") {
+          const contextId = target.getAttribute("data-id");
+          if (!contextId) return;
+          vscode.postMessage({ type: "removeContext", contextId: contextId });
+          return;
+       }
+
        const indexStr = target.getAttribute('data-index');
        if (!indexStr) return;
 
        const index = parseInt(indexStr, 10);
+       if (Number.isNaN(index)) return;
 
        if (action === "showDiff") {
            vscode.postMessage({ type: 'showDiff', index: index });

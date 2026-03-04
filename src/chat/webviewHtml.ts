@@ -19,7 +19,7 @@ export function createChatWebviewHtml(webview: vscode.Webview, extensionUri: vsc
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource} 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} data: blob:; font-src ${webview.cspSource} 'unsafe-inline'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LSPilot Chat</title>
   <link href="${codiconsUri}" rel="stylesheet" />
@@ -31,8 +31,8 @@ ${getWebviewStyles(extensionUri)}
   <div class="toolbar">
     <div class="model" id="model">Model: None</div>
     <div class="actions">
-      <button id="selectModel" class="secondary">Select Model</button>
-      <button id="clear" class="secondary">Clear</button>
+      <button id="selectModel" class="secondary icon-only" title="Select Model"><i class="codicon codicon-hubot"></i></button>
+      <button id="clear" class="secondary icon-only" title="Clear Chat"><i class="codicon codicon-clear-all"></i></button>
     </div>
   </div>
   <div id="messages"></div>
@@ -45,15 +45,27 @@ ${getWebviewStyles(extensionUri)}
       </div>
     </div>
     <div class="input-wrapper">
-      <textarea id="input" placeholder="Ask something about your code..."></textarea>
+      <div class="attachments-area">
+        <div id="contextChips" class="context-chips hidden"></div>
+        <div id="imagePreview" class="image-preview hidden"></div>
+      </div>
+      <textarea id="input" rows="1" placeholder="Ask something about your code..."></textarea>
+      <input id="imageInput" type="file" accept="image/*" multiple style="display:none;" />
       <div class="send-row">
-        <span class="hint">Enter to send, Shift+Enter for newline</span>
-        <div class="button-group">
+        <div class="button-group left-actions">
+          <button id="addContext" class="icon-toggle" title="Add code context to next message" aria-label="Add context">
+            <i class="codicon codicon-symbol-field"></i>
+          </button>
+          <button id="attachImage" class="icon-toggle" title="Attach image(s)" aria-label="Attach image">
+            <i class="codicon codicon-device-camera"></i>
+          </button>
           <button id="thinkingToggle" class="icon-toggle" title="Enable deep thinking" aria-label="Toggle deep thinking">
             <i class="codicon codicon-lightbulb"></i>
           </button>
-          <button id="stop" class="hidden">Stop</button>
-          <button id="send">Send</button>
+        </div>
+        <div class="button-group right-actions">
+          <button id="stop" class="icon-toggle stop-btn hidden" title="Stop generating" aria-label="Stop"><i class="codicon codicon-debug-stop"></i></button>
+          <button id="send" class="icon-toggle send-btn" title="Send" aria-label="Send"><i class="codicon codicon-send"></i></button>
         </div>
       </div>
     </div>
