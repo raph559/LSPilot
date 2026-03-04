@@ -77,6 +77,10 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private modelLoadInProgress = false;
   private previouslyLoadedModel: string | undefined;
   private lastTokenUsage: ChatTokenUsage | undefined;
+  private thinkingEnabled = true;
+  private modelSupportsThinking = false;
+  private thinkingSupportProbeInFlight = false;
+  private lastThinkingSupportModel: string | undefined;
 
   public constructor(private readonly client: LMStudioClient, private readonly extensionUri: vscode.Uri) {}
 
@@ -187,6 +191,14 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
   public refresh(): void {
     this.detectedContextWindowTokens = undefined;
+    this.lastThinkingSupportModel = undefined;
+    this.client.resetReasoningOffSession();
+    const model = this.client.getSettings().model?.trim();
+    if (model) {
+      this.client.clearThinkingSupportCache(model);
+    } else {
+      this.client.clearThinkingSupportCache();
+    }
     this.postState();
   }
 
@@ -198,6 +210,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.busy = false;
     this.history = [];
     this.lastTokenUsage = undefined;
+    this.client.resetReasoningOffSession();
     this.postState();
 
     if (showNotification) {
@@ -210,7 +223,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const message = rawMessage as { type?: string; text?: unknown; index?: number };
+    const message = rawMessage as { type?: string; text?: unknown; index?: number; enableThinking?: unknown; enabled?: unknown };
 
     if (message.type === "ready") {
       this.postState();
@@ -330,12 +343,29 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (message.type === "toggleThinking") {
+      const before = this.thinkingEnabled;
+      if (typeof message.enabled === "boolean") {
+        this.thinkingEnabled = message.enabled;
+      } else {
+        this.thinkingEnabled = !this.thinkingEnabled;
+      }
+      if (this.thinkingEnabled !== before) {
+        const model = this.client.getSettings().model?.trim();
+        this.client.resetReasoningOffSession(model);
+      }
+      this.postState();
+      return;
+    }
+
     if (message.type === "send" && typeof message.text === "string") {
-      await this.sendUserMessage(message.text);
+      const requestedThinking = typeof message.enableThinking === "boolean" ? message.enableThinking : this.thinkingEnabled;
+      const shouldEnableThinking = requestedThinking;
+      await this.sendUserMessage(message.text, shouldEnableThinking);
     }
   }
 
-  private async sendUserMessage(text: string): Promise<void> {
+  private async sendUserMessage(text: string, enableThinking: boolean): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) {
       return;
@@ -378,7 +408,10 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           }
 
           assistantMessage.content = chunk.response;
-          assistantMessage.thinking = chunk.reasoning;
+          assistantMessage.thinking = enableThinking ? chunk.reasoning : undefined;
+          if (!enableThinking) {
+            assistantMessage.renderedThinking = undefined;
+          }
 
           try {
             assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
@@ -393,7 +426,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             this.lastTokenUsage = chunk.usage;
           }
           this.postState();
-        }, toolsDefinition);
+        }, toolsDefinition, { enableThinking });
 
         const assistantMessage = this.history[assistantIndex];
         if (assistantMessage && assistantMessage.role === "assistant") {
@@ -401,7 +434,12 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
               assistantMessage.tool_calls = result.tool_calls;
           }
 
-          assistantMessage.content = result.response || (result.reasoning || result.tool_calls ? "" : "(empty response)");
+          const hasVisibleThinking = enableThinking && !!result.reasoning;
+          assistantMessage.content = result.response || (hasVisibleThinking || result.tool_calls ? "" : "(empty response)");
+          assistantMessage.thinking = enableThinking ? result.reasoning : undefined;
+          if (!enableThinking) {
+            assistantMessage.renderedThinking = undefined;
+          }
 
           try {
             assistantMessage.renderedContent = md.render(assistantMessage.content) as string;
@@ -414,6 +452,15 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         }
         if (result.usage) {
           this.lastTokenUsage = result.usage;
+        }
+
+        const selectedModel = this.client.getSettings().model;
+        if (selectedModel) {
+          const cachedSupport = this.client.getCachedThinkingSupport(selectedModel);
+          if (typeof cachedSupport === "boolean" && this.modelSupportsThinking !== cachedSupport) {
+            this.modelSupportsThinking = cachedSupport;
+            this.lastThinkingSupportModel = selectedModel;
+          }
         }
         
         this.postState();
@@ -508,6 +555,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     void this.refreshDetectedContextWindow();
+    void this.refreshModelThinkingSupport();
 
     const settings = this.client.getSettings();
     const modelLabel = settings.model || "None";
@@ -583,6 +631,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       busyStartTimeMs: this.busyStartTimeMs,
       modelLabel,
       modelLoading: this.modelLoadInProgress,
+      thinkingEnabled: this.thinkingEnabled,
+      thinkingSupported: this.modelSupportsThinking,
       messages: renderedMessages,
       contextUsage
     });
@@ -653,6 +703,75 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  private async refreshModelThinkingSupport(): Promise<void> {
+    if (this.thinkingSupportProbeInFlight) {
+      return;
+    }
+
+    const settings = this.client.getSettings();
+    const model = settings.model?.trim();
+
+    if (!model) {
+      let changed = false;
+      if (this.modelSupportsThinking) {
+        this.modelSupportsThinking = false;
+        changed = true;
+      }
+      if (this.lastThinkingSupportModel !== undefined) {
+        this.lastThinkingSupportModel = undefined;
+        changed = true;
+      }
+      if (changed) {
+        this.postState();
+      }
+      return;
+    }
+
+    const cachedSupport = this.client.getCachedThinkingSupport(model);
+    if (typeof cachedSupport === "boolean") {
+      let changed = false;
+      if (this.modelSupportsThinking !== cachedSupport) {
+        this.modelSupportsThinking = cachedSupport;
+        changed = true;
+      }
+      if (this.lastThinkingSupportModel !== model) {
+        this.lastThinkingSupportModel = model;
+        changed = true;
+      }
+      if (changed) {
+        this.postState();
+      }
+      return;
+    }
+
+    if (this.lastThinkingSupportModel === model) {
+      return;
+    }
+
+    this.thinkingSupportProbeInFlight = true;
+    const tokenSource = new vscode.CancellationTokenSource();
+    let stateChanged = false;
+    try {
+      const supported = await this.client.detectModelThinkingSupport(tokenSource.token, model);
+      if (this.modelSupportsThinking !== supported) {
+        this.modelSupportsThinking = supported;
+        stateChanged = true;
+      }
+      if (this.lastThinkingSupportModel !== model) {
+        this.lastThinkingSupportModel = model;
+        stateChanged = true;
+      }
+    } catch {
+      // Best effort.
+    } finally {
+      tokenSource.dispose();
+      this.thinkingSupportProbeInFlight = false;
+      if (stateChanged) {
+        this.postState();
+      }
+    }
+  }
+
   private async refreshDetectedContextWindow(): Promise<void> {
     if (this.contextProbeInFlight) {
       return;
@@ -679,17 +798,22 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       // Eagerly loading it ensures we can fetch the exact n_ctx constraint for the progress bar.
       // We only do this once per selected model and avoid doing it if a prompt is already running.
       if (!detected && !this.busy && this.previouslyLoadedModel !== settings.model) {
-        this.previouslyLoadedModel = settings.model;
-        this.modelLoadInProgress = true;
-        this.postState(); // Update UI to show loading state
-        try {
-          await this.client.loadModel(settings.model, tokenSource.token);
-          detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
-        } catch {
-          this.previouslyLoadedModel = undefined; // Retry later if it failed
-        } finally {
-          this.modelLoadInProgress = false;
-          stateChanged = true;
+        const alreadyLoaded = await this.client.isModelLoaded(settings.model, tokenSource.token);
+        if (alreadyLoaded) {
+          this.previouslyLoadedModel = settings.model;
+        } else {
+          this.previouslyLoadedModel = settings.model;
+          this.modelLoadInProgress = true;
+          this.postState(); // Update UI to show loading state
+          try {
+            await this.client.loadModel(settings.model, tokenSource.token);
+            detected = await this.client.detectModelContextWindowTokens(tokenSource.token);
+          } catch {
+            this.previouslyLoadedModel = undefined; // Retry later if it failed
+          } finally {
+            this.modelLoadInProgress = false;
+            stateChanged = true;
+          }
         }
       }
 

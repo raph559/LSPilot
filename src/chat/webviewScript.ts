@@ -4,6 +4,7 @@ export const chatWebviewScript = `
     const inputEl = document.getElementById("input");
     const sendBtn = document.getElementById("send");
     const stopBtn = document.getElementById("stop");
+    const thinkingToggleBtn = document.getElementById("thinkingToggle");
     const clearBtn = document.getElementById("clear");
     const selectModelBtn = document.getElementById("selectModel");
     const modelEl = document.getElementById("model");
@@ -11,7 +12,7 @@ export const chatWebviewScript = `
     const contextLabelEl = document.getElementById("contextLabel");
     const contextFillEl = document.getElementById("contextFill");
 
-    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, messages: [], contextUsage: undefined };
+    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined };
     let timerInterval = null;
     let promptHistory = [];
     let promptHistoryIndex = -1;
@@ -325,6 +326,7 @@ export const chatWebviewScript = `
 
       modelEl.textContent = "Model: " + state.modelLabel + (state.modelLoading ? " (Loading...)" : "");
       const noModel = !state.modelLabel || state.modelLabel === "None";
+      const modelSupportsThinking = !!state.thinkingSupported;
 
       const usage = state.contextUsage;
       if (usage && typeof usage.usagePercent === "number") {
@@ -340,6 +342,25 @@ export const chatWebviewScript = `
       }
 
       sendBtn.disabled = state.busy || noModel || state.modelLoading;
+      const thinkingDisabled = state.busy || noModel || state.modelLoading;
+      thinkingToggleBtn.disabled = thinkingDisabled;
+      thinkingToggleBtn.classList.toggle("active", !!state.thinkingEnabled);
+      thinkingToggleBtn.classList.toggle("supported-off", modelSupportsThinking && !state.thinkingEnabled);
+      thinkingToggleBtn.classList.toggle("unsupported", !noModel && !modelSupportsThinking);
+      thinkingToggleBtn.classList.toggle("crossed", !noModel && !modelSupportsThinking);
+      if (noModel) {
+        thinkingToggleBtn.title = "Select a model to use deep thinking";
+      } else if (!modelSupportsThinking) {
+        thinkingToggleBtn.title = state.thinkingEnabled
+          ? "Deep thinking enabled (best effort; model support not detected)"
+          : "Deep thinking disabled (strict mode; tool calls unavailable)";
+      } else if (state.thinkingEnabled) {
+        thinkingToggleBtn.title = "Disable deep thinking (strict mode; tool calls unavailable)";
+      } else {
+        thinkingToggleBtn.title = "Enable deep thinking (tool calls available)";
+      }
+      thinkingToggleBtn.setAttribute("aria-label", thinkingToggleBtn.title);
+      thinkingToggleBtn.setAttribute("aria-pressed", state.thinkingEnabled ? "true" : "false");
       
       if (state.busy) {
         sendBtn.classList.add("hidden");
@@ -404,7 +425,7 @@ export const chatWebviewScript = `
       // Auto-resize reset
       inputEl.style.height = 'auto';
       inputEl.value = "";
-      vscode.postMessage({ type: "send", text });
+      vscode.postMessage({ type: "send", text, enableThinking: !!state.thinkingEnabled });
     }
 
     // Auto-resize textarea
@@ -414,6 +435,16 @@ export const chatWebviewScript = `
     });
 
     sendBtn.addEventListener("click", sendInput);
+    thinkingToggleBtn.addEventListener("click", () => {
+      const noModel = !state.modelLabel || state.modelLabel === "None";
+      if (state.busy || state.modelLoading || noModel) {
+        return;
+      }
+      const nextEnabled = !state.thinkingEnabled;
+      state.thinkingEnabled = nextEnabled;
+      render();
+      vscode.postMessage({ type: "toggleThinking", enabled: nextEnabled });
+    });
     stopBtn.addEventListener("click", () => vscode.postMessage({ type: "stop" }));
     clearBtn.addEventListener("click", () => vscode.postMessage({ type: "clear" }));
     selectModelBtn.addEventListener("click", () => vscode.postMessage({ type: "selectModel" }));

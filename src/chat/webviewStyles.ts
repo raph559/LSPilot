@@ -101,7 +101,7 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       transition: clip-path 0.3s ease-out;
     }
     .actions { display: flex; gap: 8px; }
-    .button-group { display: flex; gap: 8px; }
+    .button-group { display: flex; gap: 8px; align-items: center; }
     .hidden { display: none !important; }
     button {
       font-family: inherit;
@@ -119,6 +119,71 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     button.secondary { background: transparent; border-color: var(--border); color: var(--fg); }
     button.secondary:hover { background: var(--user-bg); border-color: var(--muted); }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .icon-toggle {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      position: relative;
+      line-height: 1;
+      transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .icon-toggle i { font-size: 15px; }
+    .icon-toggle:hover:not(:disabled) {
+      background: var(--vscode-button-secondaryHoverBackground, color-mix(in srgb, var(--vscode-editor-foreground) 10%, transparent));
+      color: var(--fg);
+    }
+    .icon-toggle.supported-off {
+      color: var(--vscode-descriptionForeground, var(--muted));
+      background: color-mix(in srgb, var(--border) 22%, transparent);
+      border-color: color-mix(in srgb, var(--border) 85%, var(--fg) 15%);
+    }
+    .icon-toggle.active {
+      color: var(--vscode-button-foreground, #ffffff);
+      border-color: var(--vscode-focusBorder);
+      background: linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--vscode-focusBorder) 68%, transparent),
+        color-mix(in srgb, var(--vscode-button-background) 85%, var(--vscode-focusBorder) 15%)
+      );
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 45%, transparent), 0 0 10px color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
+    }
+    .icon-toggle.crossed::after {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 2px;
+      background: var(--vscode-errorForeground, #d64545);
+      transform: rotate(-38deg);
+      border-radius: 99px;
+      opacity: 1;
+    }
+    .icon-toggle.unsupported {
+      color: var(--vscode-disabledForeground, var(--muted));
+      border-color: color-mix(in srgb, var(--border) 72%, var(--vscode-errorForeground, #d64545) 28%);
+      border-style: dashed;
+      background: color-mix(in srgb, var(--border) 18%, transparent);
+      opacity: 0.95;
+    }
+    .icon-toggle.unsupported:hover {
+      background: color-mix(in srgb, var(--border) 18%, transparent);
+      color: var(--vscode-disabledForeground, var(--muted));
+    }
+    .icon-toggle:disabled {
+      opacity: 0.75;
+    }
+    .icon-toggle.active:disabled {
+      opacity: 0.95;
+    }
+    .icon-toggle.unsupported:disabled {
+      opacity: 0.72;
+    }
     
     #messages {
       flex: 1;

@@ -24,6 +24,34 @@ function filterGenerationModelIds(modelIds: string[]): string[] {
   return modelIds.filter((id) => !isLikelyEmbeddingModelId(id));
 }
 
+function dedupeLikelyInstanceAliases(modelIds: string[]): string[] {
+  const uniqueInOrder: string[] = [];
+  const seen = new Set<string>();
+  for (const id of modelIds) {
+    if (seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    uniqueInOrder.push(id);
+  }
+
+  const fullSet = new Set(uniqueInOrder);
+  return uniqueInOrder.filter((id) => {
+    const match = id.match(/^(.*)-(\d+)$/);
+    if (!match) {
+      return true;
+    }
+    const baseId = match[1];
+    // If a canonical base id exists, drop the numeric-suffixed alias from picker.
+    return !fullSet.has(baseId);
+  });
+}
+
+function isNumericSuffixAliasOf(candidate: string, baseModel: string): boolean {
+  const match = candidate.match(/^(.*)-(\d+)$/);
+  return !!match && match[1] === baseModel;
+}
+
 function getErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== "object") {
     return undefined;
@@ -394,11 +422,209 @@ function extractRuntimeContextWindowFromRecord(raw: unknown): number | undefined
   return undefined;
 }
 
+function isNativeModelEntryLoading(entry: NativeModelEntry): boolean {
+  if (!entry || typeof entry !== "object") {
+    return false;
+  }
+
+  const record = entry as unknown as Record<string, unknown>;
+  const directBooleanKeys = ["loading", "is_loading", "isLoading"];
+  for (const key of directBooleanKeys) {
+    if (record[key] === true) {
+      return true;
+    }
+  }
+
+  const stateValue = record.state;
+  if (typeof stateValue === "string" && /(loading|initializing|warming|pending)/i.test(stateValue)) {
+    return true;
+  }
+
+  if (stateValue && typeof stateValue === "object") {
+    const stateRecord = stateValue as Record<string, unknown>;
+    if (stateRecord.loading === true || stateRecord.isLoading === true || stateRecord.is_loading === true) {
+      return true;
+    }
+    if (typeof stateRecord.status === "string" && /(loading|initializing|warming|pending)/i.test(stateRecord.status)) {
+      return true;
+    }
+  }
+
+  const progressValue = record.progress;
+  if (progressValue && typeof progressValue === "object") {
+    const progressRecord = progressValue as Record<string, unknown>;
+    if (progressRecord.loading === true || progressRecord.active === true || progressRecord.in_progress === true) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function parseBooleanLike(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    if (value === 1) {
+      return true;
+    }
+    if (value === 0) {
+      return false;
+    }
+    return undefined;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "yes", "on", "enabled", "enable", "supported"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "no", "off", "disabled", "disable", "unsupported", "none"].includes(normalized)) {
+      return false;
+    }
+  }
+
+  return undefined;
+}
+
+function extractReasoningSupportFromRecord(raw: unknown, seen = new WeakSet<object>()): boolean | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+
+  const rawObject = raw as object;
+  if (seen.has(rawObject)) {
+    return undefined;
+  }
+  seen.add(rawObject);
+
+  const record = raw as Record<string, unknown>;
+
+  const directKeys = [
+    "supports_reasoning",
+    "supportsReasoning",
+    "reasoning_supported",
+    "reasoningEnabled",
+    "supports_thinking",
+    "supportsThinking",
+    "thinking_supported",
+    "enable_thinking",
+    "enableThinking",
+    "deep_thinking",
+    "deepThinking"
+  ];
+  for (const key of directKeys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    const parsed = parseBooleanLike(record[key]);
+    if (typeof parsed === "boolean") {
+      return parsed;
+    }
+  }
+
+  const capabilities = record.capabilities;
+  if (capabilities && typeof capabilities === "object") {
+    const capabilityRecord = capabilities as Record<string, unknown>;
+    for (const key of ["reasoning", "thinking", "deep_thinking", "supports_reasoning", "supports_thinking"]) {
+      if (!Object.prototype.hasOwnProperty.call(capabilityRecord, key)) {
+        continue;
+      }
+      const parsed = parseBooleanLike(capabilityRecord[key]);
+      if (typeof parsed === "boolean") {
+        return parsed;
+      }
+    }
+  }
+
+  const customFieldContainers = ["custom_fields", "customFields", "inference_params", "inferenceParameters", "parameters"];
+  for (const key of customFieldContainers) {
+    const container = record[key];
+    if (!Array.isArray(container)) {
+      continue;
+    }
+
+    for (const entry of container) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      const entryRecord = entry as Record<string, unknown>;
+      const labelKeys = ["key", "name", "id", "slug", "field", "label"];
+      const label = labelKeys
+        .map((labelKey) => entryRecord[labelKey])
+        .find((value): value is string => typeof value === "string");
+      if (!label || !/thinking|reasoning/i.test(label)) {
+        continue;
+      }
+
+      for (const valueKey of ["value", "default", "enabled", "supported"]) {
+        const parsed = parseBooleanLike(entryRecord[valueKey]);
+        if (typeof parsed === "boolean") {
+          return parsed;
+        }
+      }
+
+      // Presence of an explicit thinking-related field usually means the model supports toggling it.
+      return true;
+    }
+  }
+
+  for (const value of Object.values(record)) {
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    const nested = extractReasoningSupportFromRecord(value, seen);
+    if (typeof nested === "boolean") {
+      return nested;
+    }
+  }
+
+  return undefined;
+}
+
+function isExplicitNoThinkingSupportMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    /model does not support the reasoning setting/i.test(message) ||
+    (/reasoning/.test(normalized) && /does not support|unsupported|not supported/.test(normalized)) ||
+    (/thinking/.test(normalized) && /does not support|unsupported|not supported/.test(normalized))
+  );
+}
+
+function isThinkingParameterRejectedMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (isExplicitNoThinkingSupportMessage(message)) {
+    return true;
+  }
+
+  return (
+    (/enable_thinking|reasoning|reasoning_effort|extra fields|extra inputs|unknown field|unrecognized field/.test(normalized) &&
+      /unknown|unrecognized|invalid|unsupported|not supported|extra fields|extra inputs/.test(normalized)) ||
+    /enable_thinking.*(not allowed|forbidden|unexpected)/.test(normalized)
+  );
+}
+
+class ModelUnloadUnsupportedError extends Error {
+  public constructor(message = "LM Studio does not expose a model unload endpoint, so exclusive single-model loading cannot be enforced.") {
+    super(message);
+    this.name = "ModelUnloadUnsupportedError";
+  }
+}
+
 export class LMStudioClient {
   private cachedModel: string | undefined;
   private modelCacheTimestamp = 0;
   private readonly modelCacheTtlMs = 60_000;
   private modelLoadPromises = new Map<string, Promise<void>>();
+  private modelMutationQueue: Promise<void> = Promise.resolve();
+  private activeModelKey: string | undefined;
+  private activeModelMarkedAt = 0;
+  private readonly activeModelGracePeriodMs = 30_000;
+  private thinkingSupportCache = new Map<string, boolean>();
+  private thinkingSupportProbePromises = new Map<string, Promise<boolean>>();
+  private reasoningOffResponseIdByModel = new Map<string, string>();
 
   public getSettings(): LSPilotSettings {
     const config = vscode.workspace.getConfiguration("lspilot");
@@ -428,18 +654,57 @@ export class LMStudioClient {
   public invalidateModelCache(): void {
     this.cachedModel = undefined;
     this.modelCacheTimestamp = 0;
+    this.thinkingSupportCache.clear();
+    this.thinkingSupportProbePromises.clear();
+    this.reasoningOffResponseIdByModel.clear();
+  }
+
+  public clearThinkingSupportCache(model?: string): void {
+    if (!model) {
+      this.thinkingSupportCache.clear();
+      this.thinkingSupportProbePromises.clear();
+      return;
+    }
+
+    this.thinkingSupportCache.delete(model);
+    this.thinkingSupportProbePromises.delete(model);
+  }
+
+  public resetReasoningOffSession(model?: string): void {
+    if (!model) {
+      this.reasoningOffResponseIdByModel.clear();
+      return;
+    }
+
+    const normalized = model.trim();
+    if (!normalized) {
+      return;
+    }
+    this.reasoningOffResponseIdByModel.delete(normalized);
   }
 
   public async listModels(token: vscode.CancellationToken): Promise<string[]> {
     const settings = this.getSettings();
-    const models = await this.fetchModels(settings, token);
-    const ids = models.map((entry) => entry.id).filter((id): id is string => typeof id === "string" && id.length > 0);
-    return filterGenerationModelIds(ids);
+    try {
+      const nativeModels = await this.fetchNativeModels(settings, token);
+      const nativeIds = nativeModels
+        .map((entry) => (typeof entry.key === "string" ? entry.key.trim() : ""))
+        .filter((id): id is string => id.length > 0);
+      const filteredNativeIds = filterGenerationModelIds(nativeIds);
+      return dedupeLikelyInstanceAliases(filteredNativeIds);
+    } catch {
+      const models = await this.fetchModels(settings, token);
+      const ids = models
+        .map((entry) => (typeof entry.id === "string" ? entry.id.trim() : ""))
+        .filter((id): id is string => id.length > 0);
+      return dedupeLikelyInstanceAliases(filterGenerationModelIds(ids));
+    }
   }
 
   public async testConnection(token: vscode.CancellationToken): Promise<{ model: string; sample: string }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
+    await this.loadModel(model, token);
     const completion = await this.chatCompletion(
       {
         model,
@@ -459,17 +724,34 @@ export class LMStudioClient {
   }
 
   public async loadModel(model: string, token: vscode.CancellationToken): Promise<void> {
-    const existing = this.modelLoadPromises.get(model);
+    const targetModel = model.trim();
+    if (!targetModel) {
+      throw new Error("Model ID is required.");
+    }
+
+    const existing = this.modelLoadPromises.get(targetModel);
     if (existing) {
       return existing;
     }
-    const promise = this.doLoadModel(model, token).finally(() => {
-      if (this.modelLoadPromises.get(model) === promise) {
-        this.modelLoadPromises.delete(model);
+
+    const promise = this.enqueueModelMutation(async () => {
+      if (token.isCancellationRequested) {
+        throw new Error("This operation was aborted");
+      }
+      await this.doLoadModel(targetModel, token);
+    }).finally(() => {
+      if (this.modelLoadPromises.get(targetModel) === promise) {
+        this.modelLoadPromises.delete(targetModel);
       }
     });
-    this.modelLoadPromises.set(model, promise);
+    this.modelLoadPromises.set(targetModel, promise);
     return promise;
+  }
+
+  private enqueueModelMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const queued = this.modelMutationQueue.then(operation, operation);
+    this.modelMutationQueue = queued.then(() => undefined, () => undefined);
+    return queued;
   }
 
   private async doLoadModel(model: string, token: vscode.CancellationToken): Promise<void> {
@@ -480,6 +762,22 @@ export class LMStudioClient {
     const cancelListener = token.onCancellationRequested(() => controller.abort());
 
     try {
+      await this.unloadOtherLoadedModels(model, settings, token);
+
+      if (
+        this.activeModelKey === model &&
+        Date.now() - this.activeModelMarkedAt < this.activeModelGracePeriodMs
+      ) {
+        return;
+      }
+
+      const alreadyLoaded = await this.isModelLoaded(model, token);
+      if (alreadyLoaded) {
+        this.activeModelKey = model;
+        this.activeModelMarkedAt = Date.now();
+        return;
+      }
+
       try {
         const response = await fetch(`${nativeApiBase}/api/v1/models/load`, {
           method: "POST",
@@ -491,6 +789,9 @@ export class LMStudioClient {
         if (!response.ok) {
           if (response.status === 404 || response.status === 405) {
             await this.warmupModelWithChatCompletion(model, settings, token);
+            await this.unloadOtherLoadedModels(model, settings, token);
+            this.activeModelKey = model;
+            this.activeModelMarkedAt = Date.now();
             return;
           }
 
@@ -522,30 +823,182 @@ export class LMStudioClient {
 
         if (error instanceof Error && error.message === "fetch failed") {
           await this.warmupModelWithChatCompletion(model, settings, token);
+          await this.unloadOtherLoadedModels(model, settings, token);
+          this.activeModelKey = model;
+          this.activeModelMarkedAt = Date.now();
           return;
         }
 
         throw error;
       }
+      await this.unloadOtherLoadedModels(model, settings, token);
+      this.activeModelKey = model;
+      this.activeModelMarkedAt = Date.now();
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();
     }
   }
 
+  private async listConflictingLoadedOrLoadingModels(
+    modelToKeep: string,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken
+  ): Promise<string[]> {
+    let nativeModels: NativeModelEntry[] = [];
+    try {
+      nativeModels = await this.fetchNativeModels(settings, token);
+    } catch {
+      // If model status endpoint is unavailable, we cannot inspect conflicts.
+      return [];
+    }
+
+    const normalizedKeep = modelToKeep.trim();
+    const targets = new Set<string>();
+    for (const entry of nativeModels) {
+      const modelKey = typeof entry.key === "string" ? entry.key.trim() : "";
+      const instances = Array.isArray(entry.loaded_instances) ? entry.loaded_instances : [];
+      const instanceIds = instances
+        .map((instance) => (typeof instance?.id === "string" ? instance.id.trim() : ""))
+        .filter((id): id is string => id.length > 0);
+      const isLoading = isNativeModelEntryLoading(entry);
+
+      const isTargetModelEntry = modelKey === normalizedKeep;
+      const hasTargetInstance = instanceIds.includes(normalizedKeep);
+      const targetInstanceToKeep = hasTargetInstance ? normalizedKeep : isTargetModelEntry ? instanceIds[0] : undefined;
+
+      if (isTargetModelEntry || hasTargetInstance) {
+        for (const instanceId of instanceIds) {
+          if (targetInstanceToKeep && instanceId === targetInstanceToKeep) {
+            continue;
+          }
+          targets.add(instanceId);
+        }
+        continue;
+      }
+
+      for (const instanceId of instanceIds) {
+        if (instanceId !== normalizedKeep) {
+          targets.add(instanceId);
+        }
+      }
+
+      if (isLoading && modelKey && modelKey !== normalizedKeep) {
+        targets.add(modelKey);
+      }
+    }
+
+    return Array.from(targets);
+  }
+
+  private async unloadOtherLoadedModels(
+    modelToKeep: string,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken
+  ): Promise<void> {
+    const maxAttempts = 5;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const targets = await this.listConflictingLoadedOrLoadingModels(modelToKeep, settings, token);
+      if (targets.length === 0) {
+        return;
+      }
+
+      for (const unloadTarget of targets) {
+        const outcome = await this.doUnloadModel(unloadTarget, settings, token);
+        if (outcome === "unsupported") {
+          throw new ModelUnloadUnsupportedError();
+        }
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await new Promise<void>((resolve, reject) => {
+          let cancelListener: vscode.Disposable | undefined;
+          const timeout = setTimeout(() => {
+            cancelListener?.dispose();
+            resolve();
+          }, 300);
+          cancelListener = token.onCancellationRequested(() => {
+            clearTimeout(timeout);
+            cancelListener?.dispose();
+            reject(new Error("This operation was aborted"));
+          });
+        });
+      }
+    }
+
+    const remaining = await this.listConflictingLoadedOrLoadingModels(modelToKeep, settings, token);
+    if (remaining.length > 0) {
+      throw new Error(`Unable to unload conflicting LM Studio models before loading "${modelToKeep}": ${remaining.join(", ")}`);
+    }
+  }
+
   public async unloadModel(model: string, token: vscode.CancellationToken): Promise<void> {
-    const settings = this.getSettings();
+    const targetModel = model.trim();
+    if (!targetModel) {
+      return;
+    }
+
+    await this.enqueueModelMutation(async () => {
+      if (token.isCancellationRequested) {
+        throw new Error("This operation was aborted");
+      }
+      const settings = this.getSettings();
+      const outcome = await this.doUnloadModel(targetModel, settings, token);
+      if (outcome === "unsupported") {
+        throw new ModelUnloadUnsupportedError();
+      }
+    });
+  }
+
+  private async doUnloadModel(
+    model: string,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken
+  ): Promise<"ok" | "unsupported"> {
+    const normalizedModel = model.trim();
+    if (!normalizedModel) {
+      return "ok";
+    }
+
     const nativeModels = await this.fetchNativeModels(settings, token).catch(() => [] as NativeModelEntry[]);
-    const explicitMatch = nativeModels.find((entry) => entry.key === model);
-    const instanceIds = (explicitMatch?.loaded_instances ?? [])
-      .map((instance) => instance.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
+    const matchingEntries = nativeModels.filter((entry) => {
+      const key = typeof entry.key === "string" ? entry.key.trim() : "";
+      if (!key) {
+        return false;
+      }
+      return key === normalizedModel || isNumericSuffixAliasOf(key, normalizedModel);
+    });
+
+    const instanceIds = matchingEntries
+      .flatMap((entry) => (entry.loaded_instances ?? []))
+      .map((instance) => (typeof instance?.id === "string" ? instance.id.trim() : ""))
+      .filter((id): id is string => id.length > 0);
+
+    const modelKeys = new Set<string>([normalizedModel]);
+    for (const entry of matchingEntries) {
+      const key = typeof entry.key === "string" ? entry.key.trim() : "";
+      if (key.length > 0) {
+        modelKeys.add(key);
+      }
+    }
 
     const unloadTargets: Array<Record<string, string>> = [];
-    if (instanceIds.length > 0) {
-      unloadTargets.push(...instanceIds.map((instance_id) => ({ instance_id })));
+    const seenTargets = new Set<string>();
+    const pushUnloadTarget = (target: Record<string, string>): void => {
+      const key = JSON.stringify(target);
+      if (seenTargets.has(key)) {
+        return;
+      }
+      seenTargets.add(key);
+      unloadTargets.push(target);
+    };
+
+    for (const instanceId of instanceIds) {
+      pushUnloadTarget({ instance_id: instanceId });
     }
-    unloadTargets.push({ model });
+    for (const modelKey of modelKeys) {
+      pushUnloadTarget({ model: modelKey });
+    }
 
     let unloaded = false;
     let sawMissingInstanceId = false;
@@ -555,7 +1008,7 @@ export class LMStudioClient {
       try {
         const result = await this.requestModelUnload(target, settings, token);
         if (result === "unsupported") {
-          return;
+          return "unsupported";
         }
         unloaded = true;
       } catch (error) {
@@ -575,8 +1028,15 @@ export class LMStudioClient {
     // Some API variants reject { model } and require only { instance_id }.
     // If we saw that error and had no known instance, keep shutdown best-effort.
     if (!unloaded && sawMissingInstanceId) {
-      return;
+      return "ok";
     }
+
+    if (this.activeModelKey && this.activeModelKey === normalizedModel) {
+      this.activeModelKey = undefined;
+      this.activeModelMarkedAt = 0;
+    }
+
+    return "ok";
   }
 
   public async getModelSizeBytes(model: string, token: vscode.CancellationToken): Promise<number | undefined> {
@@ -629,6 +1089,147 @@ export class LMStudioClient {
     return undefined;
   }
 
+  public async isModelLoaded(model: string, token: vscode.CancellationToken): Promise<boolean> {
+    const trimmedModel = model.trim();
+    if (!trimmedModel) {
+      return false;
+    }
+
+    const settings = this.getSettings();
+    try {
+      const nativeModels = await this.fetchNativeModels(settings, token);
+      for (const entry of nativeModels) {
+        const instances = Array.isArray(entry.loaded_instances) ? entry.loaded_instances : [];
+        const hasMatchingInstance = instances.some((instance) => {
+          const instanceId = typeof instance?.id === "string" ? instance.id.trim() : "";
+          return instanceId === trimmedModel;
+        });
+        const entryKey = typeof entry.key === "string" ? entry.key.trim() : "";
+        const isMatchingModel = entryKey === trimmedModel;
+        if (hasMatchingInstance) {
+          return true;
+        }
+        if (isMatchingModel && (instances.length > 0 || isNativeModelEntryLoading(entry))) {
+          return true;
+        }
+      }
+    } catch {
+      // Best effort.
+    }
+
+    return false;
+  }
+
+  public getCachedThinkingSupport(model: string): boolean | undefined {
+    return this.thinkingSupportCache.get(model);
+  }
+
+  public async detectModelThinkingSupport(
+    token: vscode.CancellationToken,
+    modelOverride?: string
+  ): Promise<boolean> {
+    const settings = this.getSettings();
+    const model = (modelOverride ?? settings.model).trim();
+    if (!model) {
+      return false;
+    }
+
+    const cached = this.thinkingSupportCache.get(model);
+    if (typeof cached === "boolean") {
+      return cached;
+    }
+
+    const existingProbe = this.thinkingSupportProbePromises.get(model);
+    if (existingProbe) {
+      return existingProbe;
+    }
+
+    const probePromise = this.computeThinkingSupport(model, settings, token).then((supported) => {
+      this.thinkingSupportCache.set(model, supported);
+      return supported;
+    }).finally(() => {
+      if (this.thinkingSupportProbePromises.get(model) === probePromise) {
+        this.thinkingSupportProbePromises.delete(model);
+      }
+    });
+    this.thinkingSupportProbePromises.set(model, probePromise);
+    return probePromise;
+  }
+
+  private async computeThinkingSupport(
+    model: string,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken
+  ): Promise<boolean> {
+    await this.loadModel(model, token);
+
+    try {
+      const nativeModels = await this.fetchNativeModels(settings, token);
+      const match = nativeModels.find((entry) => {
+        if (entry.key === model) {
+          return true;
+        }
+        return (entry.loaded_instances ?? []).some((instance) => instance.id === model);
+      });
+
+      if (match) {
+        const fromMetadata = extractReasoningSupportFromRecord(match);
+        if (typeof fromMetadata === "boolean") {
+          console.info(`[LSPilot] Thinking support for "${model}" from metadata: ${fromMetadata ? "supported" : "unsupported"}`);
+          return fromMetadata;
+        }
+      }
+    } catch {
+      // Best effort.
+    }
+
+    const fromProbe = await this.probeThinkingSupport(model, settings, token);
+    if (typeof fromProbe === "boolean") {
+      console.info(`[LSPilot] Thinking support for "${model}" from runtime probe: ${fromProbe ? "supported" : "unsupported"}`);
+      return fromProbe;
+    }
+
+    console.info(`[LSPilot] Thinking support for "${model}" could not be confirmed; defaulting to unsupported.`);
+    return false;
+  }
+
+  private async probeThinkingSupport(
+    model: string,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken
+  ): Promise<boolean | undefined> {
+    try {
+      const result = await this.nativeChat(
+        {
+          model,
+          input: "Think through this carefully, then return only the final number: 1733 * 1729",
+          reasoning: "on",
+          max_output_tokens: 96,
+          temperature: 0
+        },
+        settings,
+        token,
+        Math.min(settings.chatTimeoutMs, 20000)
+      );
+
+      if (typeof result.reasoning === "string" && result.reasoning.trim().length > 0) {
+        return true;
+      }
+
+      return undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isExplicitNoThinkingSupportMessage(message)) {
+        return false;
+      }
+      if (isThinkingParameterRejectedMessage(message)) {
+        return false;
+      }
+
+      return undefined;
+    }
+  }
+
   public async generateInlineCompletion(
     document: vscode.TextDocument,
     position: vscode.Position,
@@ -644,6 +1245,7 @@ export class LMStudioClient {
     }
 
     const model = settings.model;
+    await this.loadModel(model, token);
     const prefix = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
     const suffix = document.getText(new vscode.Range(position, document.lineAt(document.lineCount - 1).range.end));
 
@@ -669,14 +1271,12 @@ export class LMStudioClient {
     history: ChatHistoryMessage[],
     token: vscode.CancellationToken,
     onUpdate?: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void,
-    tools?: any[]
+    tools?: any[],
+    options?: { enableThinking?: boolean }
   ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
-    
-    // Fetch dynamic context window or use -1 to let LM Studio use all available context
-    const detectedContext = await this.detectModelContextWindowTokens(token);
-    const maxTokensToUse = detectedContext && detectedContext > 0 ? detectedContext : -1;
+    await this.loadModel(model, token);
 
     let contextualHistory = history.slice(-20);
     
@@ -689,6 +1289,15 @@ export class LMStudioClient {
         contextualHistory = [{ role: "user", content: "Continue." } as ChatHistoryMessage, ...contextualHistory];
       }
     }
+
+    const thinkingRequested = options?.enableThinking !== false;
+    if (!thinkingRequested) {
+      return this.generateReasoningOffChatResponse(contextualHistory, model, settings, token);
+    }
+
+    // Fetch dynamic context window or use -1 to let LM Studio use all available context
+    const detectedContext = await this.detectModelContextWindowTokens(token);
+    const maxTokensToUse = detectedContext && detectedContext > 0 ? detectedContext : -1;
 
     const messages = [
       { role: "system", content: settings.chatSystemPrompt },
@@ -710,37 +1319,104 @@ export class LMStudioClient {
       })
     ];
 
-    let result;
-    if (onUpdate) {
-      result = await this.chatCompletionStream(
-        {
-          model,
-          messages,
-          tools,
-          max_tokens: maxTokensToUse,
-          temperature: settings.temperature
-        },
-        settings,
-        token,
-        onUpdate,
-        settings.chatTimeoutMs
-      );
-    } else {
-      result = await this.chatCompletion(
-        {
-          model,
-          messages,
-          tools,
-          max_tokens: maxTokensToUse,
-          temperature: settings.temperature
-        },
-        settings,
-        token,
-        settings.chatTimeoutMs
-      );
-    }
+    const requestBody: Record<string, unknown> = {
+      model,
+      messages,
+      tools,
+      max_tokens: maxTokensToUse,
+      temperature: settings.temperature
+    };
+    // /v1/chat/completions in LM Studio follows OpenAI-compatible fields.
+
+    const runRequest = async (body: Record<string, unknown>): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> => {
+      if (onUpdate) {
+        return this.chatCompletionStream(body, settings, token, onUpdate, settings.chatTimeoutMs);
+      }
+      return this.chatCompletion(body, settings, token, settings.chatTimeoutMs);
+    };
+
+    const result = await runRequest(requestBody);
 
     return { model, response: result.text.trim(), reasoning: result.reasoning, usage: result.usage, tool_calls: result.tool_calls };
+  }
+
+  private getLatestUserMessage(history: ChatHistoryMessage[]): string | undefined {
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      const msg = history[i];
+      if (msg.role !== "user") {
+        continue;
+      }
+      const trimmed = typeof msg.content === "string" ? msg.content.trim() : "";
+      if (trimmed.length > 0) {
+        return trimmed.slice(-12_000);
+      }
+    }
+    return undefined;
+  }
+
+  private buildReasoningOffBootstrapInput(history: ChatHistoryMessage[], systemPrompt: string): string {
+    const offInstruction =
+      `${systemPrompt}\n\n` +
+      "Thinking mode is OFF. Do not output chain-of-thought, reasoning traces, or a 'Thinking Process'. " +
+      "Return only your final answer.";
+
+    const transcriptLines: string[] = [];
+    for (const msg of history.slice(-20)) {
+      if (msg.role === "tool") {
+        continue;
+      }
+      const raw = typeof msg.content === "string" ? msg.content.trim() : "";
+      if (!raw) {
+        continue;
+      }
+      const clipped = raw.length > 2_000 ? `${raw.slice(-2_000)}\n...[truncated]` : raw;
+      transcriptLines.push(`${msg.role.toUpperCase()}: ${clipped}`);
+    }
+
+    if (transcriptLines.length === 0) {
+      return `${offInstruction}\n\nUSER: Continue.\n\nASSISTANT:`;
+    }
+
+    return `${offInstruction}\n\nConversation so far:\n\n${transcriptLines.join("\n\n")}\n\nASSISTANT:`;
+  }
+
+  private async generateReasoningOffChatResponse(
+    history: ChatHistoryMessage[],
+    model: string,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken
+  ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
+    const previousResponseId = this.reasoningOffResponseIdByModel.get(model);
+    const input = previousResponseId
+      ? this.getLatestUserMessage(history) ?? "Continue."
+      : this.buildReasoningOffBootstrapInput(history, settings.chatSystemPrompt);
+
+    const requestBody: Record<string, unknown> = {
+      model,
+      input,
+      reasoning: "off",
+      max_output_tokens: settings.chatMaxTokens,
+      temperature: settings.temperature
+    };
+
+    if (previousResponseId) {
+      requestBody.previous_response_id = previousResponseId;
+    }
+
+    const result = await this.nativeChat(requestBody, settings, token, settings.chatTimeoutMs);
+    if (result.responseId) {
+      this.reasoningOffResponseIdByModel.set(model, result.responseId);
+    } else {
+      this.reasoningOffResponseIdByModel.delete(model);
+    }
+
+    return {
+      model,
+      response: result.text.trim(),
+      reasoning: undefined,
+      usage: result.usage,
+      tool_calls: undefined
+    };
   }
 
   private async resolveModel(settings: LSPilotSettings): Promise<string> {
@@ -1036,7 +1712,7 @@ export class LMStudioClient {
     settings: LSPilotSettings,
     token: vscode.CancellationToken,
     timeoutMs = settings.chatTimeoutMs
-  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage }> {
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; responseId?: string }> {
     const nativeApiBase = this.getNativeApiBase(settings.baseUrl);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1061,7 +1737,11 @@ export class LMStudioClient {
       }
 
       const parsed = extractNativeChatOutput(json);
-      return { ...parsed, usage: extractNativeUsage(json) };
+      return {
+        ...parsed,
+        usage: extractNativeUsage(json),
+        responseId: typeof json.response_id === "string" ? json.response_id : undefined
+      };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();

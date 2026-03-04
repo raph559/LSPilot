@@ -6,6 +6,7 @@ import { loadModelWithProgress, selectModel } from "./commands/selectModel";
 
 let activeClient: LMStudioClient | undefined;
 let suppressRestoreUntil = 0;
+let restoreSuppressionDepth = 0;
 
 export function activate(context: vscode.ExtensionContext): void {
   const client = new LMStudioClient();
@@ -13,10 +14,22 @@ export function activate(context: vscode.ExtensionContext): void {
   const chatProvider = new LSPilotChatViewProvider(client, context.extensionUri);
   const lastRequestByUri = new Map<string, number>();
   let restoringModel = false;
+  const isRestoreSuppressed = (): boolean => restoreSuppressionDepth > 0 || Date.now() < suppressRestoreUntil;
+  const runWithRestoreSuppressed = async <T>(operation: () => Promise<T>, cooldownMs = 0): Promise<T> => {
+    restoreSuppressionDepth += 1;
+    try {
+      return await operation();
+    } finally {
+      restoreSuppressionDepth = Math.max(0, restoreSuppressionDepth - 1);
+      if (cooldownMs > 0) {
+        suppressRestoreUntil = Math.max(suppressRestoreUntil, Date.now() + cooldownMs);
+      }
+    }
+  };
 
   const restoreRememberedModel = async (): Promise<void> => {
     const settings = client.getSettings();
-    if (!settings.model || restoringModel || Date.now() < suppressRestoreUntil) {
+    if (!settings.model || restoringModel || isRestoreSuppressed()) {
       return;
     }
 
@@ -97,8 +110,9 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand(`${LSPilotChatViewProvider.viewType}.focus`);
     }),
     vscode.commands.registerCommand("lspilot.selectModel", async () => {
-      suppressRestoreUntil = Date.now() + 5000;
-      await selectModel(client);
+      await runWithRestoreSuppressed(async () => {
+        await selectModel(client);
+      }, 15000);
       chatProvider.refresh();
     }),
     vscode.commands.registerCommand("lspilot.clearChat", () => {

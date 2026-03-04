@@ -49,6 +49,9 @@ ${getWebviewStyles(extensionUri)}
       <div class="send-row">
         <span class="hint">Enter to send, Shift+Enter for newline</span>
         <div class="button-group">
+          <button id="thinkingToggle" class="icon-toggle" title="Enable deep thinking" aria-label="Toggle deep thinking">
+            <i class="codicon codicon-lightbulb"></i>
+          </button>
           <button id="stop" class="hidden">Stop</button>
           <button id="send">Send</button>
         </div>

@@ -57,6 +57,7 @@ export interface ChatCompletionResponse {
 
 export interface NativeChatResponse {
   model_instance_id?: string;
+  response_id?: string;
   output?: Array<{
     type?: string;
     content?: string;
