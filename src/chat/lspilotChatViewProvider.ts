@@ -93,6 +93,34 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private busy = false;
   private activeRequest: vscode.CancellationTokenSource | undefined;
   private busyStartTimeMs: number | undefined;
+
+  private trimHistory(): void {
+    if (this.history.length <= 30) {
+      return;
+    }
+
+    let sliceIndex = this.history.length - 30;
+    while (sliceIndex < this.history.length) {
+      if (this.history[sliceIndex].role === 'user') {
+        break;
+      }
+      sliceIndex++;
+    }
+
+    if (sliceIndex >= this.history.length) {
+      let lastUserIndex = -1;
+      for (let i = this.history.length - 1; i >= 0; i--) {
+        if (this.history[i].role === 'user') {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      sliceIndex = lastUserIndex !== -1 ? lastUserIndex : 0;
+    }
+
+    this.history = this.history.slice(sliceIndex);
+  }
+
   private detectedContextWindowTokens: number | undefined;
   private contextProbeInFlight = false;
   private modelLoadInProgress = false;
@@ -1482,7 +1510,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       contextBlocks: contextBlocks.length > 0 ? contextBlocks : undefined
     });
     this.pendingContextBlocks = [];
-    this.history = this.history.slice(-30);
+    this.trimHistory();
 
     const startTimeMs = Date.now();
     this.busyStartTimeMs = startTimeMs;
@@ -1516,7 +1544,15 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
               systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + JSON.stringify(this.plan, null, 2);
             }
           }
+
         const requestHistory = [...this.history];
+        if (this.mode === "plan" && this.history.length > 0) {
+            // Strip out history where the user asked to "follow the plan" but we were in PLAN mode
+            const lastMsg = this.history[this.history.length - 1];
+            if (lastMsg.role === "user" && lastMsg.content.toLowerCase().includes("follow the plan")) {
+               // DO not strip for now, let's fix the user error.
+            }
+        }
         this.history.push({ role: "assistant", content: "" });
         this.postState();
 
@@ -1612,7 +1648,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             };
 
             this.history.push(toolMessage);
-            this.history = this.history.slice(-30);
+            this.trimHistory();
             this.postState();
 
             if (approvalRequest) {
@@ -1681,7 +1717,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
               break;
             }
           }
-          this.history = this.history.slice(-30);
+          this.trimHistory();
           this.postState();
         } else {
             runNext = false;
@@ -1693,7 +1729,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             }
         }
       }
-      this.history = this.history.slice(-30);
+      this.trimHistory();
     } catch (error) {
       const lastIndex = this.history.length - 1;
       if (tokenSource.token.isCancellationRequested) {
@@ -1720,7 +1756,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      this.history = this.history.slice(-30);
+      this.trimHistory();
     } finally {
       if (this.activeRequest === tokenSource) {
         this.activeRequest = undefined;
