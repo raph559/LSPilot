@@ -4,6 +4,8 @@ import * as diff from "diff";
 import MarkdownIt from "markdown-it";
 // @ts-ignore
 import markdownItImsize from "markdown-it-imsize";
+// @ts-ignore
+import markdownItTaskLists from "markdown-it-task-lists";
 import hljs from "highlight.js";
 
 const md = new MarkdownIt({
@@ -29,7 +31,8 @@ const md = new MarkdownIt({
     return '<span class="ln"></span>' + highlighted.replace(/\n/g, '\n<span class="ln"></span>');
   }
 })
-.use(markdownItImsize);
+.use(markdownItImsize)
+.use(markdownItTaskLists);
 
 const defaultFence = md.renderer.rules.fence || function (tokens: any[], idx: number, options: any, env: any, self: any) {
   return self.renderToken(tokens, idx, options);

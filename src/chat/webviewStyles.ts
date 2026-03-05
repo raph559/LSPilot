@@ -1054,6 +1054,21 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       padding: 12px;
       font-size: 13px;
     }
+    .plan-container ul.contains-task-list {
+      list-style-type: none;
+      padding-left: 0;
+      margin: 8px 0;
+    }
+    .plan-container ul.contains-task-list li {
+      margin-bottom: 6px;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .plan-container ul.contains-task-list input[type="checkbox"] {
+      margin-top: 3px;
+      cursor: pointer;
+    }
     .plan-container.hidden { display: none; }
         .dropdown {
       background: var(--vscode-dropdown-background);
