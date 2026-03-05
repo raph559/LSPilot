@@ -1133,6 +1133,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRequest = undefined;
     this.busyStartTimeMs = undefined;
     this.busy = false;
+    this.plan = undefined;
     this.history = [];
     this.pendingContextBlocks = [];
     this.lastTokenUsage = undefined;
