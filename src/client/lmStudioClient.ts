@@ -1458,6 +1458,15 @@ export class LMStudioClient {
       })
     ];
 
+    if (messages.length > 0 && messages[messages.length - 1].role === "tool") {
+      // Workaround for strict Jinja templates in LM Studio that fail with 
+      // "No user query found in messages." when the conversation ends on a tool role.
+      messages.push({
+        role: "user",
+        content: "Tool execution finished. Please proceed with your response."
+      });
+    }
+
     const requestBody: Record<string, unknown> = {
       model,
       messages,
