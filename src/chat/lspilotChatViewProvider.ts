@@ -585,8 +585,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       return [selectionBlock];
     }
 
-    const fileBlock = this.createActiveFileContextBlock(editor);
-    return fileBlock ? [fileBlock] : [];
+    return [];
   }
 
   private async promptAndAddContext(): Promise<void> {

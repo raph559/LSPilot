@@ -1418,7 +1418,7 @@ export class LMStudioClient {
       (msg) => msg.role === "user" && normalizeImageAttachments(msg.attachments).length > 0
     );
     if (!thinkingRequested && !hasImageAttachments) {
-      return this.generateReasoningOffChatResponse(contextualHistory, model, settings, token);
+      return this.generateReasoningOffChatResponse(contextualHistory, model, settings, token, onUpdate);
     }
 
     // Fetch dynamic context window or use -1 to let LM Studio use all available context
@@ -1498,9 +1498,8 @@ export class LMStudioClient {
     return undefined;
   }
 
-  private buildReasoningOffBootstrapInput(history: ChatHistoryMessage[], systemPrompt: string): string {
+  private buildReasoningOffBootstrapInput(history: ChatHistoryMessage[]): string {
     const offInstruction =
-      `${systemPrompt}\n\n` +
       "Thinking mode is OFF. Do not output chain-of-thought, reasoning traces, or a 'Thinking Process'. " +
       "Return only your final answer.";
 
@@ -1531,16 +1530,18 @@ export class LMStudioClient {
     history: ChatHistoryMessage[],
     model: string,
     settings: LSPilotSettings,
-    token: vscode.CancellationToken
+    token: vscode.CancellationToken,
+    onUpdate?: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void
   ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const previousResponseId = this.reasoningOffResponseIdByModel.get(model);
     const input = previousResponseId
       ? this.getLatestUserMessage(history) ?? "Continue."
-      : this.buildReasoningOffBootstrapInput(history, settings.chatSystemPrompt);
+      : this.buildReasoningOffBootstrapInput(history);
 
     const requestBody: Record<string, unknown> = {
       model,
       input,
+      system_prompt: settings.chatSystemPrompt,
       reasoning: "off",
       max_output_tokens: settings.chatMaxTokens,
       temperature: settings.temperature
@@ -1550,7 +1551,15 @@ export class LMStudioClient {
       requestBody.previous_response_id = previousResponseId;
     }
 
-    const result = await this.nativeChat(requestBody, settings, token, settings.chatTimeoutMs);
+    const runRequest = async () => {
+      if (onUpdate) {
+        return this.nativeChatStream(requestBody, settings, token, onUpdate, settings.chatTimeoutMs);
+      }
+      return this.nativeChat(requestBody, settings, token, settings.chatTimeoutMs);
+    };
+
+    const result = await runRequest();
+    
     if (result.responseId) {
       this.reasoningOffResponseIdByModel.set(model, result.responseId);
     } else {
@@ -1848,6 +1857,101 @@ export class LMStudioClient {
       
       const toolCalls = accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined;
       return { ...mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning), usage: lastUsage, tool_calls: toolCalls };
+    } finally {
+      clearTimeout(timeout);
+      cancelListener.dispose();
+    }
+  }
+
+  private async nativeChatStream(
+    body: Record<string, unknown>,
+    settings: LSPilotSettings,
+    token: vscode.CancellationToken,
+    onUpdate: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }) => void,
+    timeoutMs = settings.chatTimeoutMs
+  ): Promise<{ text: string; reasoning?: string; usage?: ChatTokenUsage; responseId?: string }> {
+    const nativeApiBase = this.getNativeApiBase(settings.baseUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelListener = token.onCancellationRequested(() => controller.abort());
+
+    try {
+      let response: Response;
+      try {
+        response = await fetch(`${nativeApiBase}/api/v1/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...body, stream: true }),
+          signal: controller.signal
+        });
+      } catch (error) {
+        throw new Error(formatLMStudioRequestError(error, settings, "/api/v1/chat", "lspilot.chatTimeoutMs"));
+      }
+
+      if (!response.ok) {
+        let errorMessage = `LM Studio native chat failed (${response.status})`;
+        try {
+          const json = (await response.json()) as NativeChatResponse;
+          errorMessage = json.error?.message || errorMessage;
+        } catch {
+          // Ignore parse errors and surface status.
+        }
+        throw new Error(errorMessage);
+      }
+
+      if (!response.body) {
+        return this.nativeChat({ ...body, stream: false }, settings, token, timeoutMs);
+      }
+
+      let accumulatedResponse = "";
+      let accumulatedReasoning = "";
+      let lastEmittedResponse = "";
+      let lastEmittedReasoning = "";
+      let lastUsage: ChatTokenUsage | undefined;
+      let finalResponseId: string | undefined;
+
+      for await (const data of readSseEventData(response.body)) {
+        if (!data || data === "[DONE]") {
+          continue;
+        }
+
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          continue;
+        }
+
+        if (!parsed || typeof parsed !== "object") {
+          continue;
+        }
+
+        const parsedEvent = parsed as {
+          type?: string;
+          content?: string;
+          result?: NativeChatResponse;
+        };
+
+        if (parsedEvent.type === "message.delta" && typeof parsedEvent.content === "string") {
+          accumulatedResponse += parsedEvent.content;
+        } else if (parsedEvent.type === "reasoning.delta" && typeof parsedEvent.content === "string") {
+          accumulatedReasoning += parsedEvent.content;
+        } else if (parsedEvent.type === "chat.end" && parsedEvent.result) {
+          lastUsage = extractNativeUsage(parsedEvent.result);
+          finalResponseId = typeof parsedEvent.result.response_id === "string" ? parsedEvent.result.response_id : undefined;
+        }
+
+        const displayed = mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning);
+        const reasoningForEmit = displayed.reasoning ?? "";
+
+        if (displayed.text !== lastEmittedResponse || reasoningForEmit !== lastEmittedReasoning) {
+          lastEmittedResponse = displayed.text;
+          lastEmittedReasoning = reasoningForEmit;
+          onUpdate({ response: displayed.text, reasoning: displayed.reasoning, usage: lastUsage });
+        }
+      }
+
+      return { ...mergeDisplayedResponse(accumulatedResponse, accumulatedReasoning), usage: lastUsage, responseId: finalResponseId };
     } finally {
       clearTimeout(timeout);
       cancelListener.dispose();
