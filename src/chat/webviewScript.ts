@@ -378,7 +378,7 @@ export const chatWebviewScript = `
         let combinedHtml = "";
         for (const i of message._relatedIndices) {
             const m = state.messages[i];
-            if (m.name === "writeFile" && m.fileEdit && !m.fileEdit.superseded) {
+            if (m.fileEdit && !m.fileEdit.superseded) {
                 const fileName = (m.fileEdit.filePath || "").split(/[\\\\/]/).pop();
                 const additions = m.fileEdit.additions || 0;
                 const deletions = m.fileEdit.deletions || 0;
@@ -399,7 +399,7 @@ export const chatWebviewScript = `
                      '<button class="icon-btn" title="View Diff"><i class="codicon codicon-go-to-file" style="font-size: 14px;"></i></button>' +
                   '</div>' +
                 '</div>';
-            } else if (m.name === "readFile") {
+            } else if (m.name === "readFile" || m.name === "readFileRange") {
                 let fileName = "file";
                 if (m.toolSummary) {
                     const match = m.toolSummary.match(/on\\s+<b>([^<]+)<\\/b>/);

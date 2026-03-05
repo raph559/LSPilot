@@ -780,6 +780,126 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  private buildToolSummary(toolName: string, argsString: string): string {
+    let summaryInfo = toolName;
+
+    try {
+      const argsObj = JSON.parse(argsString) as Record<string, unknown>;
+      const shortText = (value: unknown, maxLength = 48): string => {
+        const raw = typeof value === "string" ? value.trim() : "";
+        if (!raw) {
+          return "";
+        }
+        return raw.length > maxLength ? `${raw.substring(0, maxLength)}...` : raw;
+      };
+      const leafName = (value: unknown, fallback = ""): string => {
+        const raw = typeof value === "string" ? value.trim() : "";
+        if (!raw) {
+          return fallback;
+        }
+        return path.basename(raw) || raw;
+      };
+
+      switch (toolName) {
+        case "writeFile":
+        case "appendFile":
+        case "replaceInFile":
+        case "readFile":
+        case "readFileRange": {
+          const rawPath = typeof argsObj.filePath === "string" ? argsObj.filePath : "";
+          const file = leafName(rawPath);
+          if (file) {
+            summaryInfo += ` on <b>${this.escapeHtml(file)}</b>`;
+          }
+          break;
+        }
+        case "pathExists":
+        case "fileStats":
+        case "deletePath": {
+          const rawPath = typeof argsObj.targetPath === "string" ? argsObj.targetPath : "";
+          const file = leafName(rawPath);
+          if (file) {
+            summaryInfo += ` on <b>${this.escapeHtml(file)}</b>`;
+          }
+          break;
+        }
+        case "listDirectory":
+        case "createDirectory": {
+          const rawDir = typeof argsObj.dirPath === "string" ? argsObj.dirPath : "";
+          const dir = leafName(rawDir, "/");
+          summaryInfo += ` in <b>${this.escapeHtml(dir || "/")}</b>`;
+          break;
+        }
+        case "runCommand":
+        case "runInTerminal": {
+          const cmd = shortText(argsObj.command, 64);
+          if (cmd) {
+            summaryInfo += ` <code>${this.escapeHtml(cmd)}</code>`;
+          }
+          break;
+        }
+        case "readTerminal": {
+          const id = shortText(argsObj.id, 24);
+          if (id) {
+            summaryInfo += ` (Terminal <code>${this.escapeHtml(id)}</code>)`;
+          }
+          break;
+        }
+        case "sendTerminalInput": {
+          const id = shortText(argsObj.id, 24);
+          const txt = shortText(argsObj.text, 32);
+          if (id && txt) {
+            summaryInfo += ` to <code>${this.escapeHtml(id)}</code>: <code>${this.escapeHtml(txt)}</code>`;
+          } else if (id) {
+             summaryInfo += ` to <code>${this.escapeHtml(id)}</code>`;
+          }
+          break;
+        }
+        case "findFiles": {
+          const pattern = shortText(argsObj.globPattern);
+          if (pattern) {
+            summaryInfo += ` <code>${this.escapeHtml(pattern)}</code>`;
+          }
+          break;
+        }
+        case "searchInFiles": {
+          const query = shortText(argsObj.query);
+          if (query) {
+            summaryInfo += ` for <code>${this.escapeHtml(query)}</code>`;
+          }
+          break;
+        }
+        case "renamePath": {
+          const from = leafName(argsObj.oldPath, "source");
+          const to = leafName(argsObj.newPath, "target");
+          summaryInfo += ` <code>${this.escapeHtml(from)}</code> -> <code>${this.escapeHtml(to)}</code>`;
+          break;
+        }
+        case "copyPath": {
+          const from = leafName(argsObj.sourcePath, "source");
+          const to = leafName(argsObj.destinationPath, "target");
+          summaryInfo += ` <code>${this.escapeHtml(from)}</code> -> <code>${this.escapeHtml(to)}</code>`;
+          break;
+        }
+        default:
+          break;
+      }
+    } catch {
+      // Ignore malformed tool args; fallback summary is just the tool name.
+    }
+
+    return summaryInfo;
+  }
+
   public resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
 
@@ -1122,40 +1242,46 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         this.postState();
 
         if (result.tool_calls && result.tool_calls.length > 0 && !tokenSource.token.isCancellationRequested) {
-            runNext = true;
-            for (const tc of result.tool_calls) {
-               const toolResult = await executeTool(tc.function.name, tc.function.arguments);
+          runNext = true;
+          for (const tc of result.tool_calls) {
+            const summaryInfo = this.buildToolSummary(tc.function.name, tc.function.arguments);
+            const toolMessage: ChatHistoryMessage = {
+              role: "tool",
+              name: tc.function.name,
+              toolSummary: summaryInfo,
+              tool_call_id: tc.id,
+              content: tc.function.name === "runCommand" ? "[Starting terminal command...]" : ""
+            };
 
-               this.coalescePendingFileEdit(toolResult.fileEdit);
-               
-               let summaryInfo = tc.function.name;
-               try {
-                 const argsObj = JSON.parse(tc.function.arguments);
-                 if (tc.function.name === "writeFile" || tc.function.name === "readFile") {
-                   const file = (argsObj.filePath || "").split(/[\\/]/).pop();
-                   summaryInfo += ` on <b>${file}</b>`;
-                 } else if (tc.function.name === "runCommand") {
-                   const cmd = argsObj.command || "";
-                   const shortCmd = cmd.length > 20 ? cmd.substring(0, 20) + "..." : cmd;
-                   summaryInfo += ` <code>${shortCmd}</code>`;
-                 } else if (tc.function.name === "listDirectory") {
-                   const dir = (argsObj.dirPath || "").split(/[\\/]/).pop() || '/';
-                   summaryInfo += ` in <b>${dir}</b>`;
-                 }
-               } catch (e) {}
-
-               this.history.push({
-                   role: "tool",
-                   name: tc.function.name,
-                   toolSummary: summaryInfo,
-                   tool_call_id: tc.id,
-                   content: toolResult.text,
-                   fileEdit: toolResult.fileEdit,
-                   resolvedPath: toolResult.resolvedPath
-               });
-            }
+            this.history.push(toolMessage);
             this.history = this.history.slice(-30);
             this.postState();
+
+            const toolResult = await executeTool(tc.function.name, tc.function.arguments, {
+              onUpdate: (text) => {
+                if (this.activeRequest !== tokenSource || tokenSource.token.isCancellationRequested) {
+                  return;
+                }
+                toolMessage.content = text;
+                toolMessage.renderedContent = undefined;
+                this.postState();
+              }
+            });
+
+            this.coalescePendingFileEdit(toolResult.fileEdit);
+
+            toolMessage.content = toolResult.text;
+            toolMessage.fileEdit = toolResult.fileEdit;
+            toolMessage.resolvedPath = toolResult.resolvedPath;
+            toolMessage.renderedContent = undefined;
+
+            if (tokenSource.token.isCancellationRequested) {
+              runNext = false;
+              break;
+            }
+          }
+          this.history = this.history.slice(-30);
+          this.postState();
         } else {
             runNext = false;
             // Only record generation time once the full logic loop has fully executed and stopped.
@@ -1247,7 +1373,13 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           } else {
             let lang = "plaintext";
             if (msg.name === "runCommand") lang = "bash";
-            else if (msg.name === "writeFile" || msg.name === "readFile") {
+            else if (
+              msg.name === "writeFile" ||
+              msg.name === "appendFile" ||
+              msg.name === "replaceInFile" ||
+              msg.name === "readFile" ||
+              msg.name === "readFileRange"
+            ) {
               try {
                  const argsObj = JSON.parse(msg.tool_call_id ? this.history.find(m => m.tool_calls?.some((t: any) => t.id === msg.tool_call_id))?.tool_calls?.find((t:any) => t.id === msg.tool_call_id)?.function?.arguments || "{}" : "{}");
                  if (argsObj.filePath) {

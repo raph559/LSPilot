@@ -202,7 +202,7 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     }
     .msg-wrapper.user { align-self: flex-end; max-width: 85%; }
     .msg-wrapper.assistant { align-self: flex-start; max-width: 100%; }
-    .msg-wrapper.tool { align-self: flex-start; width: 100%; margin-top: -12px; margin-left: 12px; }
+    .msg-wrapper.tool { align-self: stretch; margin-top: -12px; margin-left: 12px; }
     .msg-wrapper.tool .role { display: none; }
 
     .role {
@@ -299,14 +299,19 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       background: transparent;
       padding: 0;
       border: none;
-      margin-left: 8px;
+      margin-left: 0;
     }
     .tool-card {
       margin-top: 4px;
       border: 1px solid var(--border);
-      border-radius: 4px;
-      background: var(--bg);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--assistant-bg) 50%, transparent);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+      transition: border-color 0.2s;
       overflow: hidden;
+    }
+    .tool-card:hover {
+      border-color: color-mix(in srgb, var(--border) 60%, var(--fg) 40%);
     }
     .tool-details {
       /* now part of tool-card */
@@ -316,31 +321,49 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       color: var(--muted);
       font-size: 11px;
       font-weight: 500;
-      padding: 6px 10px;
+      padding: 8px 12px;
       user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      list-style: none;
+    }
+    .tool-summary::-webkit-details-marker {
+      display: none;
+    }
+    .tool-summary::before {
+      content: "\\25B6";
+      font-size: 10px;
+      opacity: 0.5;
+      transition: transform 0.2s ease;
+    }
+    details[open] > .tool-summary::before {
+      transform: rotate(90deg);
     }
     .tool-summary:hover {
-      background: var(--assistant-bg);
+      background: color-mix(in srgb, var(--assistant-bg) 80%, transparent);
+      color: var(--fg);
     }
     .tool-summary b {
       color: var(--fg);
+      font-weight: 600;
     }
     .tool-output-pre {
       margin: 0;
       padding: 0;
-      border-top: 1px solid var(--border);
-      background: var(--user-bg);
-      max-height: 250px;
+      border-top: 1px dashed var(--border);
+      background: color-mix(in srgb, var(--user-bg) 30%, transparent);
+      max-height: 280px;
       overflow-y: auto;
     }
     .tool-output-code {
       display: block;
-      padding: 10px;
+      padding: 12px;
       font-family: var(--vscode-editor-font-family, monospace);
-      font-size: 12px;
+      font-size: 11.5px;
       line-height: 1.5;
       white-space: pre-wrap;
-      color: var(--muted);
+      color: color-mix(in srgb, var(--muted) 80%, var(--fg) 20%);
     }
     .inline-diff-view {
       display: flex;
@@ -425,16 +448,19 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       display: flex;
       flex-direction: row;
       align-items: center;
-      gap: 6px;
-      padding: 6px 8px;
-      border: 1px solid transparent;
-      border-radius: var(--border-radius);
-      background: transparent;
+      gap: 8px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--assistant-bg) 50%, transparent);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
       position: relative;
+      margin-bottom: 6px;
+      transition: all 0.2s ease;
     }
     .global-edit-card:hover {
-      background: var(--vscode-list-hoverBackground, rgba(90, 93, 94, 0.31));
-      border-color: var(--border);
+      background: color-mix(in srgb, var(--assistant-bg) 80%, transparent);
+      border-color: color-mix(in srgb, var(--border) 60%, var(--fg) 40%);
     }
     .hover-actions {
       display: none;
