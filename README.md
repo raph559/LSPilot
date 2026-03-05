@@ -6,7 +6,7 @@ LSPilot is a VS Code extension that provides Copilot-style inline code suggestio
 
 - Inline ghost-text completions in the editor.
 - Built-in chat sidebar view (`LSPilot` activity bar icon).
-- Chat tool calls can run terminal commands in a persistent `LSPilot Terminal`, with live output streamed back into chat.
+- Chat tool calls run inside reusable VS Code terminals, so the user can continue in the same terminal after the agent, including from the embedded chat terminal view.
 - Manual trigger command: `LSPilot: Trigger Inline Completion`.
 - Connection diagnostics: `LSPilot: Test LM Studio Connection`.
 - Model picker command: `LSPilot: Select Model`.
@@ -15,7 +15,7 @@ LSPilot is a VS Code extension that provides Copilot-style inline code suggestio
 
 ## Requirements
 
-- VS Code 1.88.0+
+- VS Code 1.109.0+
 - Node.js 18+ (for extension development)
 - LM Studio running with:
   - a model loaded
@@ -65,3 +65,7 @@ To use chat, open the `LSPilot` icon in the activity bar and send a message.
 
 - If suggestions do not appear, run `LSPilot: Test LM Studio Connection` from the Command Palette.
 - If no model is selected, run `LSPilot: Select Model` and choose one.
+
+## Support
+
+Report bugs or request features at: https://github.com/raph559/LSPilot/issues

@@ -61,7 +61,14 @@ md.renderer.rules.fence = function (tokens: any[], idx: number, options: any, en
 import { LMStudioClient } from "../client/lmStudioClient";
 import type { ChatContextBlock, ChatContextUsage, ChatHistoryMessage, ChatImageAttachment, ChatTokenUsage } from "../types";
 import { createChatWebviewHtml } from "./webviewHtml";
-import { toolsDefinition, executeTool } from "./tools";
+import {
+  toolsDefinition,
+  executeTool,
+  type ManagedTerminalSnapshot,
+  getManagedTerminalSnapshot,
+  revealManagedTerminal,
+  sendInputToManagedTerminal
+} from "./tools";
 import { LSPilotDiffProvider } from "./lspilotDiffProvider";
 
 export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
@@ -82,6 +89,10 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private thinkingSupportProbeInFlight = false;
   private lastThinkingSupportModel: string | undefined;
   private pendingContextBlocks: ChatContextBlock[] = [];
+  private activeEmbeddedTerminalId: string | undefined;
+  private embeddedTerminalVisible = false;
+  private embeddedTerminalPollHandle: NodeJS.Timeout | undefined;
+  private embeddedTerminalSnapshot: ManagedTerminalSnapshot | undefined = undefined;
 
   private static readonly maxImageAttachmentsPerTurn = 6;
   private static readonly maxImageSizeBytes = 8 * 1024 * 1024;
@@ -841,7 +852,11 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         }
         case "runCommand":
         case "runInTerminal": {
+          const id = shortText(argsObj.id, 24);
           const cmd = shortText(argsObj.command, 64);
+          if (id) {
+            summaryInfo += ` in <code>${this.escapeHtml(id)}</code>`;
+          }
           if (cmd) {
             summaryInfo += ` <code>${this.escapeHtml(cmd)}</code>`;
           }
@@ -913,12 +928,14 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       if (this.view === webviewView) {
         this.view = undefined;
       }
+      this.stopEmbeddedTerminalPolling();
     });
 
     webviewView.webview.onDidReceiveMessage((message: unknown) => {
       void this.handleMessage(message);
     });
 
+    this.syncEmbeddedTerminalPolling();
     this.postState();
   }
 
@@ -944,12 +961,86 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.history = [];
     this.pendingContextBlocks = [];
     this.lastTokenUsage = undefined;
+    this.activeEmbeddedTerminalId = undefined;
+    this.embeddedTerminalVisible = false;
+    this.embeddedTerminalSnapshot = undefined;
+    this.stopEmbeddedTerminalPolling();
     this.client.resetReasoningOffSession();
     this.postState();
 
     if (showNotification) {
       vscode.window.showInformationMessage("LSPilot chat cleared.");
     }
+  }
+
+  private setActiveEmbeddedTerminal(id: string | undefined): void {
+    this.activeEmbeddedTerminalId = id;
+    this.embeddedTerminalVisible = Boolean(id);
+    this.embeddedTerminalSnapshot = id ? getManagedTerminalSnapshot(id) : undefined;
+    this.syncEmbeddedTerminalPolling();
+    this.postState();
+  }
+
+  private hideEmbeddedTerminal(): void {
+    if (!this.activeEmbeddedTerminalId) {
+      return;
+    }
+
+    this.embeddedTerminalVisible = false;
+    this.postState();
+  }
+
+  private restoreEmbeddedTerminal(): void {
+    if (!this.activeEmbeddedTerminalId) {
+      return;
+    }
+
+    this.embeddedTerminalVisible = true;
+    this.refreshEmbeddedTerminalSnapshot();
+    this.postState();
+  }
+
+  private stopEmbeddedTerminalPolling(): void {
+    if (this.embeddedTerminalPollHandle) {
+      clearInterval(this.embeddedTerminalPollHandle);
+      this.embeddedTerminalPollHandle = undefined;
+    }
+  }
+
+  private syncEmbeddedTerminalPolling(): void {
+    this.stopEmbeddedTerminalPolling();
+    if (!this.view || !this.activeEmbeddedTerminalId) {
+      return;
+    }
+
+    this.embeddedTerminalPollHandle = setInterval(() => {
+      this.refreshEmbeddedTerminalSnapshot();
+    }, 250);
+  }
+
+  private refreshEmbeddedTerminalSnapshot(): void {
+    if (!this.view || !this.activeEmbeddedTerminalId) {
+      return;
+    }
+
+    const snapshot = getManagedTerminalSnapshot(this.activeEmbeddedTerminalId);
+    if (!snapshot) {
+      this.activeEmbeddedTerminalId = undefined;
+      this.embeddedTerminalVisible = false;
+      this.embeddedTerminalSnapshot = undefined;
+      this.stopEmbeddedTerminalPolling();
+      void this.view.webview.postMessage({ type: "terminalState", terminal: undefined, visible: false });
+      return;
+    }
+
+    const nextSerialized = JSON.stringify(snapshot);
+    const previousSerialized = this.embeddedTerminalSnapshot ? JSON.stringify(this.embeddedTerminalSnapshot) : "";
+    if (nextSerialized === previousSerialized) {
+      return;
+    }
+
+    this.embeddedTerminalSnapshot = snapshot;
+    void this.view.webview.postMessage({ type: "terminalState", terminal: snapshot, visible: this.embeddedTerminalVisible });
   }
 
   private async handleMessage(rawMessage: unknown): Promise<void> {
@@ -965,6 +1056,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       enabled?: unknown;
       images?: unknown;
       contextId?: unknown;
+      terminalId?: unknown;
     };
 
     if (message.type === "ready") {
@@ -1070,6 +1162,34 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
     if (message.type === "clear") {
       this.clearChat();
+      return;
+    }
+
+    if (message.type === "hideTerminal") {
+      this.hideEmbeddedTerminal();
+      return;
+    }
+
+    if (message.type === "restoreTerminal") {
+      this.restoreEmbeddedTerminal();
+      return;
+    }
+
+    if (message.type === "showTerminal" && typeof message.terminalId === "string") {
+      if (!revealManagedTerminal(message.terminalId)) {
+        vscode.window.showErrorMessage(`Terminal ${message.terminalId} is no longer available.`);
+      }
+      return;
+    }
+
+    if (message.type === "terminalInput" && typeof message.terminalId === "string" && typeof message.text === "string") {
+      const result = sendInputToManagedTerminal(message.terminalId, message.text);
+      if (!result.ok) {
+        vscode.window.showErrorMessage(result.message);
+      } else {
+        this.setActiveEmbeddedTerminal(message.terminalId);
+        this.refreshEmbeddedTerminalSnapshot();
+      }
       return;
     }
 
@@ -1250,7 +1370,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
               name: tc.function.name,
               toolSummary: summaryInfo,
               tool_call_id: tc.id,
-              content: tc.function.name === "runCommand" ? "[Starting terminal command...]" : ""
+              content: tc.function.name === "runCommand" || tc.function.name === "runInTerminal"
+                ? "[Starting terminal command...]"
+                : ""
             };
 
             this.history.push(toolMessage);
@@ -1265,6 +1387,13 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
                 toolMessage.content = text;
                 toolMessage.renderedContent = undefined;
                 this.postState();
+              },
+              onTerminalSession: (terminalSession) => {
+                if (this.activeRequest !== tokenSource || tokenSource.token.isCancellationRequested) {
+                  return;
+                }
+                this.setActiveEmbeddedTerminal(terminalSession.id);
+                this.refreshEmbeddedTerminalSnapshot();
               }
             });
 
@@ -1423,7 +1552,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       thinkingSupported: this.modelSupportsThinking,
       messages: renderedMessages,
       pendingContextBlocks: this.pendingContextBlocks,
-      contextUsage
+      contextUsage,
+      embeddedTerminal: this.embeddedTerminalSnapshot,
+      embeddedTerminalVisible: this.embeddedTerminalVisible
     });
   }
 

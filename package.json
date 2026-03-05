@@ -5,6 +5,19 @@
   "version": "0.0.1",
   "publisher": "raph559",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/raph559/LSPilot.git"
+  },
+  "homepage": "https://github.com/raph559/LSPilot#readme",
+  "bugs": {
+    "url": "https://github.com/raph559/LSPilot/issues"
+  },
+  "icon": "media/lspilot.png",
+  "galleryBanner": {
+    "color": "#0b1f2a",
+    "theme": "dark"
+  },
   "engines": {
     "vscode": "^1.109.0"
   },
@@ -12,6 +25,13 @@
     "Programming Languages",
     "Machine Learning",
     "Other"
+  ],
+  "keywords": [
+    "lm-studio",
+    "local-ai",
+    "inline-completions",
+    "chat",
+    "coding-assistant"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -155,15 +175,16 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
-    "package": "vsce package"
+    "package": "vsce package",
+    "publish:vsce": "vsce publish"
   },
   "devDependencies": {
     "@types/diff": "^7.0.2",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.19.35",
     "@types/vscode": "^1.109.0",
-    "typescript": "^5.4.5",
-    "vsce": "^2.15.0"
+    "@vscode/vsce": "^3.7.1",
+    "typescript": "^5.4.5"
   },
   "dependencies": {
     "@vscode/codicons": "^0.0.44",

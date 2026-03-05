@@ -16,11 +16,14 @@ export const chatWebviewScript = `
     const contextEl = document.getElementById("context");
     const contextLabelEl = document.getElementById("contextLabel");
     const contextFillEl = document.getElementById("contextFill");
+    const embeddedTerminalHostEl = document.getElementById("embeddedTerminalHost");
 
-    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [] };
+    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [], embeddedTerminal: undefined, embeddedTerminalVisible: false };
     let timerInterval = null;
     let promptHistory = [];
     let promptHistoryIndex = -1;
+    let terminalHistory = [];
+    let terminalHistoryIndex = -1;
     let pendingImages = [];
     const MAX_ATTACHMENTS = 6;
     const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -205,6 +208,241 @@ export const chatWebviewScript = `
         chip.appendChild(remove);
 
         contextChipsEl.appendChild(chip);
+      }
+    }
+
+    function renderEmbeddedTerminal() {
+      if (!embeddedTerminalHostEl) {
+        return;
+      }
+
+      const terminal = state.embeddedTerminal;
+      if (!terminal || !terminal.id) {
+        embeddedTerminalHostEl.classList.add("hidden");
+        embeddedTerminalHostEl.innerHTML = "";
+        return;
+      }
+
+      embeddedTerminalHostEl.classList.remove("hidden");
+
+      if (!state.embeddedTerminalVisible) {
+        embeddedTerminalHostEl.innerHTML = "";
+
+        const restore = document.createElement("div");
+        restore.className = "embedded-terminal-restore";
+
+        const label = document.createElement("span");
+        label.className = "embedded-terminal-restore-label";
+        label.textContent = "Terminal hidden: " + terminal.name + " (" + terminal.id + ")";
+        restore.appendChild(label);
+
+        const actions = document.createElement("div");
+        actions.className = "embedded-terminal-restore-actions";
+
+        const revealBtn = document.createElement("button");
+        revealBtn.className = "embedded-terminal-action";
+        revealBtn.textContent = "Reveal";
+        revealBtn.addEventListener("click", () => {
+          vscode.postMessage({ type: "showTerminal", terminalId: terminal.id });
+        });
+        actions.appendChild(revealBtn);
+
+        const reopenBtn = document.createElement("button");
+        reopenBtn.className = "embedded-terminal-action";
+        reopenBtn.textContent = "Reopen";
+        reopenBtn.addEventListener("click", () => {
+          vscode.postMessage({ type: "restoreTerminal" });
+        });
+        actions.appendChild(reopenBtn);
+
+        restore.appendChild(actions);
+        embeddedTerminalHostEl.appendChild(restore);
+        return;
+      }
+
+      let panel = embeddedTerminalHostEl.querySelector(".embedded-terminal-panel");
+      if (!panel) {
+        embeddedTerminalHostEl.innerHTML = "";
+        panel = document.createElement("div");
+        panel.className = "embedded-terminal-panel";
+
+        const header = document.createElement("div");
+        header.className = "embedded-terminal-header";
+
+        const title = document.createElement("span");
+        title.className = "embedded-terminal-title";
+        header.appendChild(title);
+
+        const meta = document.createElement("span");
+        meta.className = "embedded-terminal-meta";
+        header.appendChild(meta);
+
+        const status = document.createElement("span");
+        status.className = "embedded-terminal-status";
+
+        const statusDot = document.createElement("span");
+        statusDot.className = "embedded-terminal-status-dot";
+        status.appendChild(statusDot);
+
+        const statusLabel = document.createElement("span");
+        statusLabel.className = "embedded-terminal-status-label";
+        status.appendChild(statusLabel);
+
+        header.appendChild(status);
+
+        const actions = document.createElement("div");
+        actions.className = "embedded-terminal-header-actions";
+
+        const revealBtn = document.createElement("button");
+        revealBtn.className = "embedded-terminal-action";
+        revealBtn.textContent = "Reveal";
+        revealBtn.addEventListener("click", () => {
+          if (state.embeddedTerminal && state.embeddedTerminal.id) {
+            vscode.postMessage({ type: "showTerminal", terminalId: state.embeddedTerminal.id });
+          }
+        });
+        actions.appendChild(revealBtn);
+
+        const hideBtn = document.createElement("button");
+        hideBtn.className = "embedded-terminal-action";
+        hideBtn.textContent = "Hide";
+        hideBtn.addEventListener("click", () => {
+          vscode.postMessage({ type: "hideTerminal" });
+        });
+        actions.appendChild(hideBtn);
+
+        header.appendChild(actions);
+        panel.appendChild(header);
+
+        const body = document.createElement("div");
+        body.className = "embedded-terminal-body";
+
+        const note = document.createElement("div");
+        note.className = "embedded-terminal-note hidden";
+        body.appendChild(note);
+
+        const output = document.createElement("pre");
+        output.className = "embedded-terminal-output";
+        body.appendChild(output);
+
+        const inputRow = document.createElement("div");
+        inputRow.className = "embedded-terminal-input-row";
+
+        const prompt = document.createElement("span");
+        prompt.className = "embedded-terminal-prompt";
+        prompt.textContent = ">";
+        inputRow.appendChild(prompt);
+
+        const input = document.createElement("input");
+        input.className = "embedded-terminal-input";
+        input.type = "text";
+        input.placeholder = "Send a command to this terminal";
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            const value = input.value;
+            if (!value.trim() || !state.embeddedTerminal || !state.embeddedTerminal.id) {
+              return;
+            }
+            terminalHistory.push(value);
+            terminalHistoryIndex = terminalHistory.length;
+            vscode.postMessage({ type: "terminalInput", terminalId: state.embeddedTerminal.id, text: value + "\\n" });
+            input.value = "";
+            return;
+          }
+
+          if (event.key === "ArrowUp") {
+            if (terminalHistory.length > 0 && terminalHistoryIndex > 0) {
+              event.preventDefault();
+              terminalHistoryIndex -= 1;
+              input.value = terminalHistory[terminalHistoryIndex];
+            }
+            return;
+          }
+
+          if (event.key === "ArrowDown") {
+            if (terminalHistory.length > 0 && terminalHistoryIndex < terminalHistory.length) {
+              event.preventDefault();
+              terminalHistoryIndex += 1;
+              input.value = terminalHistoryIndex === terminalHistory.length ? "" : terminalHistory[terminalHistoryIndex];
+            }
+          }
+        });
+        inputRow.appendChild(input);
+
+        const sendBtn = document.createElement("button");
+        sendBtn.className = "embedded-terminal-send";
+        sendBtn.textContent = "Send";
+        sendBtn.addEventListener("click", () => {
+          const value = input.value;
+          if (!value.trim() || !state.embeddedTerminal || !state.embeddedTerminal.id) {
+            return;
+          }
+          terminalHistory.push(value);
+          terminalHistoryIndex = terminalHistory.length;
+          vscode.postMessage({ type: "terminalInput", terminalId: state.embeddedTerminal.id, text: value + "\\n" });
+          input.value = "";
+        });
+        inputRow.appendChild(sendBtn);
+
+        body.appendChild(inputRow);
+        panel.appendChild(body);
+        embeddedTerminalHostEl.appendChild(panel);
+      }
+
+      const titleEl = panel.querySelector(".embedded-terminal-title");
+      const metaEl = panel.querySelector(".embedded-terminal-meta");
+      const statusDotEl = panel.querySelector(".embedded-terminal-status-dot");
+      const statusLabelEl = panel.querySelector(".embedded-terminal-status-label");
+      const noteEl = panel.querySelector(".embedded-terminal-note");
+      const outputEl = panel.querySelector(".embedded-terminal-output");
+      const inputEl = panel.querySelector(".embedded-terminal-input");
+      const sendBtnEl = panel.querySelector(".embedded-terminal-send");
+
+      if (titleEl) {
+        titleEl.textContent = "Embedded Terminal";
+      }
+      if (metaEl) {
+        metaEl.textContent = terminal.name + " (" + terminal.id + ")";
+      }
+      if (statusDotEl) {
+        statusDotEl.classList.toggle("idle", !terminal.isRunning);
+      }
+      if (statusLabelEl) {
+        if (terminal.isRunning) {
+          statusLabelEl.textContent = terminal.runningCommand ? "Running: " + terminal.runningCommand : "Running";
+        } else if (typeof terminal.lastExitCode === "number") {
+          statusLabelEl.textContent = "Idle · last exit " + String(terminal.lastExitCode);
+        } else {
+          statusLabelEl.textContent = "Idle";
+        }
+      }
+      if (noteEl) {
+        if (!terminal.shellIntegrationSeen) {
+          noteEl.textContent = "Shell integration is not active for this terminal, so the chat view may not receive live output.";
+          noteEl.classList.remove("hidden");
+        } else {
+          noteEl.textContent = "";
+          noteEl.classList.add("hidden");
+        }
+      }
+      if (inputEl) {
+        inputEl.disabled = false;
+      }
+      if (sendBtnEl) {
+        sendBtnEl.disabled = false;
+      }
+      if (outputEl) {
+        const shouldStickToBottom =
+          outputEl.scrollHeight - outputEl.clientHeight <= outputEl.scrollTop + 24;
+        const nextText = terminal.transcript && terminal.transcript.length > 0
+          ? terminal.transcript
+          : "(No captured terminal output yet)";
+        outputEl.textContent = nextText;
+        outputEl.classList.toggle("embedded-terminal-empty", !(terminal.transcript && terminal.transcript.length > 0));
+        if (shouldStickToBottom) {
+          outputEl.scrollTop = outputEl.scrollHeight;
+        }
       }
     }
 
@@ -654,6 +892,7 @@ export const chatWebviewScript = `
         }
       }
 
+      renderEmbeddedTerminal();
       renderPendingContextChips();
       renderPendingImages();
     }
@@ -1043,6 +1282,15 @@ export const chatWebviewScript = `
         state = message;
         render();
         renderGlobalPendingEdits();
+        return;
+      }
+
+      if (message && message.type === "terminalState") {
+        state.embeddedTerminal = message.terminal;
+        if (typeof message.visible === "boolean") {
+          state.embeddedTerminalVisible = message.visible;
+        }
+        renderEmbeddedTerminal();
       }
     });
 

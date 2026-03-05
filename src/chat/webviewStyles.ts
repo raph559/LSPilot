@@ -195,6 +195,160 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       gap: 24px;
       scroll-behavior: smooth;
     }
+    .embedded-terminal-host {
+      flex: 0 0 auto;
+      padding: 16px 16px 12px;
+    }
+    .embedded-terminal-restore {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--vscode-editor-background);
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .embedded-terminal-restore-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .embedded-terminal-restore-actions {
+      display: inline-flex;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    .embedded-terminal-panel {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+    }
+    .embedded-terminal-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--vscode-editorGroupHeader-tabsBackground, transparent);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .embedded-terminal-title {
+      font-family: var(--vscode-font-family);
+      font-weight: 600;
+      color: var(--fg);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+    .embedded-terminal-meta {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .embedded-terminal-status {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .embedded-terminal-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--vscode-charts-green, #4caf50);
+    }
+    .embedded-terminal-status-dot.idle {
+      background: var(--muted);
+    }
+    .embedded-terminal-header-actions {
+      display: inline-flex;
+      gap: 4px;
+      margin-left: 8px;
+    }
+    .embedded-terminal-action {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--fg);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .embedded-terminal-action:hover {
+      background: var(--vscode-toolbar-hoverBackground, rgba(90, 93, 94, 0.31));
+    }
+    .embedded-terminal-body {
+      padding: 0;
+      background: var(--vscode-terminal-background, var(--vscode-editor-background));
+    }
+    .embedded-terminal-output {
+      margin: 0;
+      padding: 10px;
+      min-height: 120px;
+      max-height: 250px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--vscode-terminal-foreground, var(--fg));
+    }
+    .embedded-terminal-empty {
+      color: var(--muted);
+      font-style: italic;
+    }
+    .embedded-terminal-note {
+      padding: 8px 10px 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .embedded-terminal-input-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px 10px;
+      border-top: 1px solid var(--border);
+      background: var(--vscode-editor-background);
+    }
+    .embedded-terminal-prompt {
+      font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+      font-size: 12px;
+      color: var(--muted);
+      user-select: none;
+    }
+    .embedded-terminal-input {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      background: var(--input-bg);
+      color: var(--input-fg);
+      font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
+      font-size: 12px;
+      outline: none;
+    }
+    .embedded-terminal-input:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+    .embedded-terminal-input:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+    .embedded-terminal-send {
+      padding: 6px 10px;
+      font-size: 11px;
+      border-radius: 6px;
+    }
     .msg-wrapper {
       display: flex;
       flex-direction: column;
@@ -202,7 +356,8 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     }
     .msg-wrapper.user { align-self: flex-end; max-width: 85%; }
     .msg-wrapper.assistant { align-self: flex-start; max-width: 100%; }
-    .msg-wrapper.tool { align-self: stretch; margin-top: -12px; margin-left: 12px; }
+    .msg-wrapper.tool { align-self: stretch; margin-top: -12px; }
+    .msg-wrapper.tool + .msg-wrapper.tool { margin-top: -20px; }
     .msg-wrapper.tool .role { display: none; }
 
     .role {

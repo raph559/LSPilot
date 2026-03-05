@@ -15,17 +15,56 @@ const maxSearchFileBytes = 2 * 1024 * 1024;
 const maxCommandTimeoutMs = 120_000;
 const maxCommandBufferBytes = 4 * 1024 * 1024;
 const maxDeletePreviewBytes = 1_500_000;
+const maxTerminalTranscriptChars = 180_000;
 
 interface ManagedTerminal {
   id: string;
   terminal: vscode.Terminal;
-  process: cp.ChildProcess;
-  writeEmitter: vscode.EventEmitter<string>;
   buffer: string;
-  exitCode?: number;
+  transcript: string;
+  executionSerial: number;
+  activeExecutionSerial?: number;
+  activeExecution?: vscode.TerminalShellExecution;
+  runningCommand?: string;
+  lastExitCode?: number;
+  shellIntegrationSeen: boolean;
 }
+
+export interface ManagedTerminalSnapshot {
+  id: string;
+  name: string;
+  transcript: string;
+  isRunning: boolean;
+  runningCommand?: string;
+  lastExitCode?: number;
+  shellIntegrationSeen: boolean;
+}
+
 const managedTerminals = new Map<string, ManagedTerminal>();
 let terminalIdCounter = 1;
+
+vscode.window.onDidCloseTerminal((terminal) => {
+  for (const [id, managedTerminal] of managedTerminals.entries()) {
+    if (managedTerminal.terminal === terminal) {
+      managedTerminals.delete(id);
+      break;
+    }
+  }
+});
+
+vscode.window.onDidStartTerminalShellExecution((event) => {
+  const managedTerminal = findManagedTerminalByTerminal(event.terminal);
+  if (!managedTerminal) {
+    return;
+  }
+
+  managedTerminal.shellIntegrationSeen = true;
+  if (managedTerminal.activeExecution === event.execution) {
+    return;
+  }
+
+  trackTerminalExecution(managedTerminal, event.execution);
+});
 
 function createFunctionTool(
   name: string,
@@ -192,8 +231,9 @@ export const toolsDefinition = [
   ),
   createFunctionTool(
     "runInTerminal",
-    "Run a realistic shell command inside a VS Code graphical terminal. The AI can read output in real-time.",
+    "Run a shell command inside a reusable VS Code integrated terminal that stays open for the user afterward.",
     {
+      id: { type: "string", description: "Existing terminal ID to reuse. If omitted, creates a new terminal." },
       command: { type: "string", description: "Command to execute" },
       cwd: { type: "string", description: "Optional working directory path" },
       isBackground: { type: "boolean", description: "If true, returns immediately while command runs. If false, waits for command to complete." },
@@ -415,9 +455,243 @@ function buildCommandFailureOutput(error: unknown): string {
   return trimToolOutput(lines.join("\n\n"));
 }
 
+function sanitizeTerminalOutput(text: string): string {
+  if (!text) {
+    return text;
+  }
+
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    // OSC sequences, including VS Code shell integration markers like ESC ] 633 ; ... BEL/ST
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, "")
+    .replace(/\x9d[\s\S]*?(?:\x07|\x1b\\|$)/g, "")
+    // DCS / PM / APC sequences terminated by ST
+    .replace(/\x1b[P^_][\s\S]*?(?:\x1b\\|$)/g, "")
+    // CSI sequences, including colors and cursor motion
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]?/g, "")
+    .replace(/\x9b[0-?]*[ -/]*[@-~]?/g, "")
+    // Single-character escape sequences
+    .replace(/\x1b[@-_]/g, "")
+    // Drop remaining non-printable control chars but keep tab/newline
+    .replace(/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f-\x9f]/g, "")
+    .trimEnd();
+}
+
+function appendCappedText(
+  existing: string,
+  text: string,
+  maxChars: number,
+  truncationPrefix: string
+): string {
+  if (!text) {
+    return existing;
+  }
+
+  const combined = existing + text;
+  if (combined.length <= maxChars) {
+    return combined;
+  }
+
+  const truncated = combined.slice(-maxChars);
+  const omitted = combined.length - truncated.length;
+  return `${truncationPrefix}${omitted} chars omitted]\n${truncated}`;
+}
+
+function appendTerminalText(managedTerminal: ManagedTerminal, text: string, includeInUnread = true): void {
+  if (!text) {
+    return;
+  }
+
+  if (includeInUnread) {
+    managedTerminal.buffer = appendCappedText(
+      managedTerminal.buffer,
+      text,
+      maxCommandBufferBytes,
+      "...[older terminal output truncated: "
+    );
+  }
+
+  managedTerminal.transcript = appendCappedText(
+    managedTerminal.transcript,
+    text,
+    maxTerminalTranscriptChars,
+    "...[older embedded terminal transcript truncated: "
+  );
+}
+
+function buildManagedTerminalSnapshot(managedTerminal: ManagedTerminal): ManagedTerminalSnapshot {
+  return {
+    id: managedTerminal.id,
+    name: managedTerminal.terminal.name,
+    transcript: trimToolOutput(sanitizeTerminalOutput(managedTerminal.transcript), maxTerminalTranscriptChars),
+    isRunning: managedTerminal.activeExecutionSerial !== undefined,
+    runningCommand: managedTerminal.runningCommand,
+    lastExitCode: managedTerminal.lastExitCode,
+    shellIntegrationSeen: managedTerminal.shellIntegrationSeen
+  };
+}
+
+function findManagedTerminalByTerminal(terminal: vscode.Terminal): ManagedTerminal | undefined {
+  for (const managedTerminal of managedTerminals.values()) {
+    if (managedTerminal.terminal === terminal) {
+      return managedTerminal;
+    }
+  }
+  return undefined;
+}
+
+async function waitForShellIntegration(
+  terminal: vscode.Terminal,
+  timeoutMs = 3_000
+): Promise<vscode.TerminalShellIntegration | undefined> {
+  if (terminal.shellIntegration) {
+    return terminal.shellIntegration;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const integrationSubscription = vscode.window.onDidChangeTerminalShellIntegration((event) => {
+      if (settled || event.terminal !== terminal) {
+        return;
+      }
+
+      settled = true;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      integrationSubscription.dispose();
+      resolve(event.shellIntegration);
+    });
+
+    timeoutHandle = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      integrationSubscription.dispose();
+      resolve(terminal.shellIntegration);
+    }, timeoutMs);
+  });
+}
+
+function waitForExecutionEnd(execution: vscode.TerminalShellExecution): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    const subscription = vscode.window.onDidEndTerminalShellExecution((event) => {
+      if (event.execution !== execution) {
+        return;
+      }
+
+      subscription.dispose();
+      resolve(event.exitCode);
+    });
+  });
+}
+
+function createManagedTerminal(cwd: string): ManagedTerminal {
+  const id = `term-${terminalIdCounter++}`;
+  const terminal = vscode.window.createTerminal({
+    name: `LSPilot Terminal (${id})`,
+    cwd
+  });
+
+  const managedTerminal: ManagedTerminal = {
+    id,
+    terminal,
+    buffer: "",
+    transcript: "",
+    executionSerial: 0,
+    shellIntegrationSeen: Boolean(terminal.shellIntegration)
+  };
+
+  managedTerminals.set(id, managedTerminal);
+  return managedTerminal;
+}
+
+function trackTerminalExecution(
+  managedTerminal: ManagedTerminal,
+  execution: vscode.TerminalShellExecution
+): { getOutput: () => string; finished: Promise<number | undefined> } {
+  if (managedTerminal.activeExecution === execution) {
+    return {
+      getOutput: () => "",
+      finished: Promise.resolve(managedTerminal.lastExitCode)
+    };
+  }
+
+  const executionSerial = ++managedTerminal.executionSerial;
+  managedTerminal.activeExecution = execution;
+  managedTerminal.activeExecutionSerial = executionSerial;
+  managedTerminal.runningCommand = execution.commandLine.value;
+  managedTerminal.lastExitCode = undefined;
+
+  if (managedTerminal.runningCommand) {
+    appendTerminalText(managedTerminal, `> ${managedTerminal.runningCommand}\n`, false);
+  }
+
+  let output = "";
+  const reader = (async () => {
+    try {
+      for await (const chunk of execution.read()) {
+        output += chunk;
+        appendTerminalText(managedTerminal, chunk);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const note = `\n[terminal output stream ended unexpectedly: ${message}]`;
+      output += note;
+      appendTerminalText(managedTerminal, note);
+    }
+  })();
+
+  const finished = waitForExecutionEnd(execution).then(async (exitCode) => {
+    await reader;
+
+    if (managedTerminal.activeExecutionSerial === executionSerial) {
+      managedTerminal.activeExecution = undefined;
+      managedTerminal.activeExecutionSerial = undefined;
+      managedTerminal.runningCommand = undefined;
+      managedTerminal.lastExitCode = exitCode;
+    }
+
+    return exitCode;
+  });
+
+  void finished.catch(() => undefined);
+
+  return {
+    getOutput: () => output,
+    finished
+  };
+}
+
+function sendTextToTerminal(terminal: vscode.Terminal, text: string): void {
+  const normalized = text.replace(/\r\n/g, "\n");
+  let segmentStart = 0;
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    if (normalized[index] !== "\n") {
+      continue;
+    }
+
+    terminal.sendText(normalized.slice(segmentStart, index), true);
+    segmentStart = index + 1;
+  }
+
+  if (segmentStart < normalized.length) {
+    terminal.sendText(normalized.slice(segmentStart), false);
+  }
+}
+
 export interface ToolResult {
   text: string;
   resolvedPath?: string;
+  terminalSession?: {
+    id: string;
+    name: string;
+  };
   fileEdit?: {
     filePath: string;
     oldContent: string | null;
@@ -431,6 +705,33 @@ export interface ToolResult {
 
 export interface ExecuteToolOptions {
   onUpdate?: (text: string) => void;
+  onTerminalSession?: (terminal: NonNullable<ToolResult["terminalSession"]>) => void;
+}
+
+export function getManagedTerminalSnapshot(id: string): ManagedTerminalSnapshot | undefined {
+  const managedTerminal = managedTerminals.get(id);
+  return managedTerminal ? buildManagedTerminalSnapshot(managedTerminal) : undefined;
+}
+
+export function sendInputToManagedTerminal(id: string, text: string): { ok: true } | { ok: false; message: string } {
+  const managedTerminal = managedTerminals.get(id);
+  if (!managedTerminal) {
+    return { ok: false, message: `Terminal ${id} not found.` };
+  }
+
+  managedTerminal.terminal.show(true);
+  sendTextToTerminal(managedTerminal.terminal, text);
+  return { ok: true };
+}
+
+export function revealManagedTerminal(id: string): boolean {
+  const managedTerminal = managedTerminals.get(id);
+  if (!managedTerminal) {
+    return false;
+  }
+
+  managedTerminal.terminal.show(false);
+  return true;
 }
 
 export async function executeTool(name: string, argsString: string, options?: ExecuteToolOptions): Promise<ToolResult> {
@@ -749,6 +1050,7 @@ export async function executeTool(name: string, argsString: string, options?: Ex
         }
       }
       case "runInTerminal": {
+        const terminalIdArg = getOptionalStringArg(args, "id");
         const command = getRequiredStringArg(args, "command");
         const cwdArg = getOptionalStringArg(args, "cwd");
         const isBackground = getBooleanArg(args, "isBackground", false);
@@ -761,100 +1063,95 @@ export async function executeTool(name: string, argsString: string, options?: Ex
           cwd = vscode.workspace.workspaceFolders[0].uri.fsPath;
         }
 
-        const terminalId = `term-${terminalIdCounter++}`;
-        const writeEmitter = new vscode.EventEmitter<string>();
-        let isOpened = false;
-        let pendingWrites: string[] = [];
+        let managed = terminalIdArg ? managedTerminals.get(terminalIdArg) : undefined;
+        if (terminalIdArg && !managed) {
+          return { text: `Error: Terminal ${terminalIdArg} not found.` };
+        }
+        if (terminalIdArg && cwdArg) {
+          return { text: `Error: Cannot set cwd when reusing terminal ${terminalIdArg}. Reuse the terminal's existing working directory instead.` };
+        }
 
-        const emit = (txt: string) => {
-          if (isOpened) {
-            writeEmitter.fire(txt);
-          } else {
-            pendingWrites.push(txt);
-          }
-        };
-        
-        let pty: vscode.Pseudoterminal = {
-          onDidWrite: writeEmitter.event,
-          open: () => {
-            isOpened = true;
-            pendingWrites.forEach(t => writeEmitter.fire(t));
-            pendingWrites = [];
-          },
-          close: () => {
-            const mt = managedTerminals.get(terminalId);
-            if (mt) {
-               try { mt.process.kill(); } catch (e) {}
-               managedTerminals.delete(terminalId);
-            }
-          },
-          handleInput: (data: string) => {
-            const mt = managedTerminals.get(terminalId);
-            if (mt && mt.process.stdin) {
-               mt.process.stdin.write(data);
+        if (!managed && !isBackground && !cwdArg) {
+          for (const mt of Array.from(managedTerminals.values()).reverse()) {
+            if (mt.activeExecutionSerial === undefined && mt.terminal.exitStatus === undefined) {
+              managed = mt;
+              break;
             }
           }
+        }
+
+        if (!managed) {
+          managed = createManagedTerminal(cwd);
+        }
+
+        const terminalSession = {
+          id: managed.id,
+          name: managed.terminal.name
         };
+        options?.onTerminalSession?.(terminalSession);
 
-        const terminal = vscode.window.createTerminal({
-          name: `LSPilot (${terminalId})`,
-          pty: pty
-        });
-        terminal.show();
+        if (managed.activeExecutionSerial !== undefined) {
+          return { text: `Error: Terminal ${managed.id} is already running a tracked command. Wait for it to finish or use sendTerminalInput for interactive input.` };
+        }
 
-        const child = cp.spawn(command, [], {
-          cwd: cwd,
-          shell: true,
-          env: { ...process.env, FORCE_COLOR: "1" }
-        });
+        managed.terminal.show(true);
 
-        const managed: ManagedTerminal = {
-          id: terminalId,
-          terminal,
-          process: child,
-          writeEmitter,
-          buffer: ""
-        };
-        managedTerminals.set(terminalId, managed);
+        const shellIntegration = await waitForShellIntegration(managed.terminal);
+        if (!shellIntegration) {
+          appendTerminalText(managed, `> ${command}\n`, false);
+          appendTerminalText(
+            managed,
+            "[Shell integration is not active for this terminal, so chat mirroring is unavailable for this session.]\n",
+            false
+          );
+          sendTextToTerminal(managed.terminal, `${command}\n`);
+          const noIntegrationText = [
+            `Sent command to ${managed.id}.`,
+            "Shell integration is not active for this terminal, so LSPilot cannot capture or wait on the output.",
+            "The terminal stays open and the user can continue in the same terminal."
+          ].join("\n");
+          return { text: noIntegrationText, terminalSession };
+        }
 
-        child.stdout?.on("data", (data: Buffer) => {
-          const text = data.toString();
-          managed.buffer += text;
-          emit(text.replace(/\r?\n/g, "\r\n"));
-        });
-
-        child.stderr?.on("data", (data: Buffer) => {
-          const text = data.toString();
-          managed.buffer += text;
-          emit(text.replace(/\r?\n/g, "\r\n"));
-        });
-
-        child.on("close", (code) => {
-          managed.exitCode = code ?? undefined;
-          emit(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m\r\n`);
-        });
+        managed.shellIntegrationSeen = true;
+        const trackedExecution = trackTerminalExecution(managed, shellIntegration.executeCommand(command));
 
         if (isBackground) {
-          return { text: `Started background process ${terminalId}\nCommand: ${command}\nUse readTerminal to check output.` };
-        } else {
-          return new Promise<ToolResult>((resolve) => {
-             let resolved = false;
-             const timer = setTimeout(() => {
-               if (!resolved) {
-                 resolved = true;
-                 resolve({ text: `Terminal command timed out after ${timeoutMs}ms.\nOutput so far:\n${trimToolOutput(managed.buffer)}` });
-               }
-             }, timeoutMs);
-
-             child.on("close", (code) => {
-               if (!resolved) {
-                 resolved = true;
-                 clearTimeout(timer);
-                 resolve({ text: `Terminal process finished with code ${code}.\nOutput:\n${trimToolOutput(managed.buffer, maxToolOutputChars)}` });
-               }
-             });
-          });
+          return {
+            text: `Started command in ${managed.id}\nCommand: ${command}\nThe terminal stays open for the user. Use readTerminal to check unread output.`,
+            terminalSession
+          };
         }
+
+        return new Promise<ToolResult>((resolve) => {
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            const sanitizedOutput = sanitizeTerminalOutput(trackedExecution.getOutput());
+            resolve({
+              text: `Terminal command is still running in ${managed.id} after ${timeoutMs}ms.\nOutput so far:\n${trimToolOutput(sanitizedOutput || "(no output yet)")}\nThe terminal stays open for the user.`,
+              terminalSession
+            });
+          }, timeoutMs);
+
+          trackedExecution.finished.then((exitCode) => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            const sanitizedOutput = sanitizeTerminalOutput(trackedExecution.getOutput());
+            resolve({
+              text: `Terminal command finished in ${managed.id} with code ${exitCode ?? "unknown"}.\nOutput:\n${trimToolOutput(sanitizedOutput || "(command completed with no output)", maxToolOutputChars)}\nThe terminal stays open for the user.`,
+              terminalSession
+            });
+          });
+        });
       }
       case "readTerminal": {
         const id = getRequiredStringArg(args, "id");
@@ -862,24 +1159,37 @@ export async function executeTool(name: string, argsString: string, options?: Ex
         if (!mt) {
           return { text: `Error: Terminal ${id} not found or already closed.` };
         }
-        const output = mt.buffer;
-        mt.buffer = ""; 
-        const status = mt.exitCode !== undefined ? `Closed (code ${mt.exitCode})` : "Running";
-        return { text: `[Status: ${status}]\nOutput:\n${trimToolOutput(output, maxToolOutputChars)}` };
+        const output = sanitizeTerminalOutput(mt.buffer);
+        mt.buffer = "";
+        const status = mt.activeExecutionSerial !== undefined
+          ? `Running${mt.runningCommand ? `: ${mt.runningCommand}` : ""}`
+          : mt.lastExitCode !== undefined
+            ? `Idle (last exit code ${mt.lastExitCode})`
+            : "Idle";
+        const body = output.length > 0
+          ? trimToolOutput(output, maxToolOutputChars)
+          : mt.shellIntegrationSeen
+            ? "(no new output)"
+            : "(no captured output; shell integration is not active for this terminal)";
+        return { text: `[Status: ${status}]\nOutput:\n${body}` };
       }
       case "sendTerminalInput": {
         const id = getRequiredStringArg(args, "id");
         const textToInput = getRequiredStringArg(args, "text");
+        const result = sendInputToManagedTerminal(id, textToInput);
+        if (!result.ok) {
+          return { text: `Error: ${result.message}` };
+        }
         const mt = managedTerminals.get(id);
-        if (!mt) {
-          return { text: `Error: Terminal ${id} not found.` };
-        }
-        if (mt.process.stdin) {
-          mt.process.stdin.write(textToInput);
-          return { text: `Sent input to ${id}. Use readTerminal to see response.` };
-        } else {
-          return { text: `Error: Terminal ${id} does not have an open stdin.` };
-        }
+        return {
+          text: `Sent input to ${id}. The user can keep using the same terminal in VS Code.`,
+          terminalSession: mt
+            ? {
+                id: mt.id,
+                name: mt.terminal.name
+              }
+            : undefined
+        };
       }
       default:
         return { text: `Error: Unknown tool ${name}` };
