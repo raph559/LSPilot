@@ -128,7 +128,7 @@ export interface ChatImageAttachment {
 
 export interface ChatContextBlock {
   id: string;
-  source: "selection" | "activeFile" | "file";
+  source: "selection" | "activeFile" | "file" | "codebase";
   label: string;
   content: string;
   filePath?: string;

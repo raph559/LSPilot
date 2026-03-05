@@ -85,9 +85,15 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
   private static readonly maxImageAttachmentsPerTurn = 6;
   private static readonly maxImageSizeBytes = 8 * 1024 * 1024;
-  private static readonly maxContextBlocksPerTurn = 6;
+  private static readonly maxContextBlocksPerTurn = 96;
   private static readonly maxSelectionContextChars = 12_000;
   private static readonly maxFileContextChars = 18_000;
+  private static readonly maxWorkspaceFilePickCount = 64;
+  private static readonly maxWorkspaceFileSizeBytes = 300 * 1024;
+  private static readonly maxCodebaseFileCount = 120;
+  private static readonly maxCodebaseCandidateFiles = 3000;
+  private static readonly maxCodebasePerFileChars = 3_200;
+  private static readonly maxCodebaseTotalChars = 180_000;
 
   public constructor(private readonly client: LMStudioClient, private readonly extensionUri: vscode.Uri) {}
 
@@ -258,6 +264,316 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  private isLikelyIgnoredCodebasePath(relativePath: string): boolean {
+    const normalized = relativePath.replace(/\\/g, "/").toLowerCase();
+    const segments = normalized.split("/");
+    const ignoredDirs = new Set([
+      ".git",
+      "node_modules",
+      "dist",
+      "build",
+      "out",
+      ".next",
+      ".nuxt",
+      "coverage",
+      "target",
+      "bin",
+      "obj",
+      ".venv",
+      "venv",
+      "__pycache__",
+      ".idea",
+      ".vscode"
+    ]);
+
+    if (segments.some((segment) => ignoredDirs.has(segment))) {
+      return true;
+    }
+
+    const ignoredSuffixes = [
+      ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".icns", ".svg",
+      ".mp3", ".mp4", ".mkv", ".webm", ".wav", ".ogg", ".flac",
+      ".zip", ".tar", ".gz", ".7z", ".rar",
+      ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+      ".jar", ".class", ".exe", ".dll", ".so", ".dylib", ".a", ".o", ".obj",
+      ".ttf", ".otf", ".woff", ".woff2", ".eot",
+      ".map"
+    ];
+
+    if (ignoredSuffixes.some((suffix) => normalized.endsWith(suffix))) {
+      return true;
+    }
+
+    if (/\.min\.(js|css)$/i.test(normalized)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private async readWorkspaceTextFileSnippet(
+    uri: vscode.Uri,
+    maxChars: number,
+    maxFileSizeBytes = LSPilotChatViewProvider.maxWorkspaceFileSizeBytes
+  ): Promise<{ relativePath: string; languageId: string; content: string; lineCount: number; truncated: boolean } | undefined> {
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if ((stat.type & vscode.FileType.File) === 0 || stat.size <= 0 || stat.size > maxFileSizeBytes) {
+        return undefined;
+      }
+
+      const document = await vscode.workspace.openTextDocument(uri);
+      const raw = document.getText().trim();
+      if (!raw || raw.includes("\u0000")) {
+        return undefined;
+      }
+
+      const trimmed = this.trimContextText(raw, maxChars);
+      return {
+        relativePath: this.getDisplayPath(uri),
+        languageId: document.languageId || "plaintext",
+        content: trimmed.content,
+        lineCount: document.lineCount,
+        truncated: trimmed.truncated
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private addPendingContextBlocks(blocks: ChatContextBlock[]): void {
+    if (!Array.isArray(blocks) || blocks.length === 0) {
+      return;
+    }
+
+    const next = [...this.pendingContextBlocks];
+    let dropped = 0;
+    let changed = false;
+
+    for (const block of blocks) {
+      const existingIndex = next.findIndex((item) => item.id === block.id);
+      if (existingIndex >= 0) {
+        next[existingIndex] = block;
+        changed = true;
+        continue;
+      }
+
+      if (next.length >= LSPilotChatViewProvider.maxContextBlocksPerTurn) {
+        dropped += 1;
+        continue;
+      }
+
+      next.push(block);
+      changed = true;
+    }
+
+    if (changed) {
+      this.pendingContextBlocks = next;
+      this.postState();
+    }
+
+    if (dropped > 0) {
+      vscode.window.showWarningMessage(
+        `LSPilot context limit reached. ${dropped} context block${dropped > 1 ? "s were" : " was"} not added.`
+      );
+    }
+  }
+
+  private async promptForWorkspaceFilesContextBlocks(): Promise<ChatContextBlock[]> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      vscode.window.showInformationMessage("Open a workspace folder to attach files.");
+      return [];
+    }
+
+    const pickedUris = await vscode.window.showOpenDialog({
+      canSelectFiles: true,
+      canSelectMany: true,
+      canSelectFolders: false,
+      openLabel: "Add Files As Context",
+      defaultUri: folders[0].uri
+    });
+
+    if (!pickedUris || pickedUris.length === 0) {
+      return [];
+    }
+
+    const limitedUris = pickedUris.slice(0, LSPilotChatViewProvider.maxWorkspaceFilePickCount);
+    if (limitedUris.length < pickedUris.length) {
+      vscode.window.showInformationMessage(
+        `LSPilot: Using first ${limitedUris.length} files (max ${LSPilotChatViewProvider.maxWorkspaceFilePickCount} per add).`
+      );
+    }
+
+    const blocks: ChatContextBlock[] = [];
+    let skipped = 0;
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "LSPilot: Adding file context",
+        cancellable: false
+      },
+      async (progress) => {
+        let index = 0;
+        for (const uri of limitedUris) {
+          const snippet = await this.readWorkspaceTextFileSnippet(uri, LSPilotChatViewProvider.maxFileContextChars);
+          if (snippet) {
+            blocks.push({
+              id: `file:${uri.toString()}`,
+              source: "file",
+              label: `File ${snippet.relativePath}`,
+              content: snippet.content,
+              filePath: snippet.relativePath,
+              languageId: snippet.languageId,
+              lineStart: 1,
+              lineEnd: snippet.lineCount,
+              truncated: snippet.truncated
+            });
+          } else {
+            skipped += 1;
+          }
+
+          index += 1;
+          progress.report({
+            increment: 100 / limitedUris.length,
+            message: `${index}/${limitedUris.length}`
+          });
+        }
+      }
+    );
+
+    if (skipped > 0) {
+      vscode.window.showInformationMessage(
+        `LSPilot skipped ${skipped} file${skipped > 1 ? "s" : ""} (non-text, empty, too large, or unreadable).`
+      );
+    }
+
+    return blocks;
+  }
+
+  private async buildCodebaseContextBlock(): Promise<ChatContextBlock | undefined> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      vscode.window.showInformationMessage("Open a workspace folder to attach codebase context.");
+      return undefined;
+    }
+
+    const perFolderLimit = Math.max(1, Math.ceil(LSPilotChatViewProvider.maxCodebaseCandidateFiles / folders.length));
+    const foundUris: vscode.Uri[] = [];
+    const excludeGlob =
+      "**/{.git,node_modules,dist,build,out,.next,.nuxt,coverage,target,bin,obj,.venv,venv,__pycache__,.idea,.vscode}/**";
+
+    for (const folder of folders) {
+      const matches = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(folder, "**/*"),
+        excludeGlob,
+        perFolderLimit
+      );
+      foundUris.push(...matches);
+    }
+
+    if (foundUris.length === 0) {
+      return undefined;
+    }
+
+    const uniqueUris = [...new Map(foundUris.map((uri) => [uri.toString(), uri])).values()]
+      .sort((a, b) => this.getDisplayPath(a).localeCompare(this.getDisplayPath(b)));
+
+    const sections: string[] = [];
+    let included = 0;
+    let scanned = 0;
+    let skippedIgnored = 0;
+    let skippedUnreadable = 0;
+    let aggregateChars = 0;
+    let budgetLimited = false;
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: "LSPilot: Building whole codebase context",
+        cancellable: false
+      },
+      async (progress) => {
+        const total = Math.max(1, uniqueUris.length);
+
+        for (const uri of uniqueUris) {
+          if (included >= LSPilotChatViewProvider.maxCodebaseFileCount) {
+            budgetLimited = true;
+            break;
+          }
+
+          const relativePath = this.getDisplayPath(uri);
+          if (this.isLikelyIgnoredCodebasePath(relativePath)) {
+            skippedIgnored += 1;
+            scanned += 1;
+            continue;
+          }
+
+          const snippet = await this.readWorkspaceTextFileSnippet(
+            uri,
+            LSPilotChatViewProvider.maxCodebasePerFileChars
+          );
+          scanned += 1;
+
+          if (!snippet) {
+            skippedUnreadable += 1;
+            continue;
+          }
+
+          const header =
+            `[FILE] ${snippet.relativePath} | language=${snippet.languageId} | lines=1-${snippet.lineCount}` +
+            (snippet.truncated ? " | truncated=true" : "");
+          const section = `${header}\n${snippet.content}`;
+
+          if (aggregateChars + section.length + 2 > LSPilotChatViewProvider.maxCodebaseTotalChars) {
+            budgetLimited = true;
+            break;
+          }
+
+          sections.push(section);
+          aggregateChars += section.length + 2;
+          included += 1;
+
+          if (scanned % 20 === 0) {
+            progress.report({
+              increment: (20 / total) * 100,
+              message: `${Math.min(scanned, uniqueUris.length)}/${uniqueUris.length} files scanned`
+            });
+          }
+        }
+
+        progress.report({ increment: 100 });
+      }
+    );
+
+    if (sections.length === 0) {
+      return undefined;
+    }
+
+    const roots = folders.map((folder) => vscode.workspace.asRelativePath(folder.uri, false)).join(", ");
+    const summaryLines = [
+      `Workspace roots: ${roots}`,
+      `Included files: ${included}`,
+      `Scanned candidates: ${Math.min(scanned, uniqueUris.length)} / ${uniqueUris.length}`,
+      `Skipped ignored paths: ${skippedIgnored}`,
+      `Skipped unreadable/non-text/oversize: ${skippedUnreadable}`,
+      `Budget limited: ${budgetLimited ? "true" : "false"}`
+    ];
+    const content = `${summaryLines.join("\n")}\n\n${sections.join("\n\n-----\n\n")}`;
+    const final = this.trimContextText(content, LSPilotChatViewProvider.maxCodebaseTotalChars);
+    const workspaceKey = folders.map((folder) => folder.uri.toString()).sort().join("|");
+
+    return {
+      id: `codebase:${workspaceKey}`,
+      source: "codebase",
+      label: `Whole Codebase (${included} files)`,
+      content: final.content,
+      filePath: roots,
+      truncated: final.truncated || budgetLimited
+    };
+  }
+
   private collectAutomaticContextBlocks(): ChatContextBlock[] {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
@@ -274,70 +590,98 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async promptAndAddContext(): Promise<void> {
+    type ContextAction = "selection" | "activeExcerpt" | "activeFile" | "workspaceFiles" | "codebase";
     const editor = vscode.window.activeTextEditor;
-    if (!editor) {
-      vscode.window.showInformationMessage("Open a file to attach context.");
-      return;
-    }
+    const items: Array<vscode.QuickPickItem & { action: ContextAction }> = [];
 
-    const candidates: Array<vscode.QuickPickItem & { block: ChatContextBlock }> = [];
-    const selectionBlock = this.createSelectionContextBlock(editor);
-    if (selectionBlock) {
-      candidates.push({
-        label: "Selection",
-        description: selectionBlock.label,
-        detail: selectionBlock.truncated ? "Selection clipped to fit context budget." : undefined,
-        block: selectionBlock
-      });
-    }
+    if (editor) {
+      const selection = this.createSelectionContextBlock(editor);
+      if (selection) {
+        items.push({
+          label: "Selection",
+          description: selection.label,
+          detail: selection.truncated ? "Selection clipped to fit context budget." : "Attach selected text from active editor.",
+          action: "selection"
+        });
+      }
 
-    const activeFileBlock = this.createActiveFileContextBlock(editor);
-    if (activeFileBlock) {
-      candidates.push({
-        label: "Active File Excerpt",
-        description: activeFileBlock.label,
-        detail: activeFileBlock.truncated ? "Excerpt clipped to fit context budget." : undefined,
-        block: activeFileBlock
-      });
-    }
+      const excerpt = this.createActiveFileContextBlock(editor);
+      if (excerpt) {
+        items.push({
+          label: "Active File Excerpt",
+          description: excerpt.label,
+          detail: excerpt.truncated ? "Excerpt clipped to fit context budget." : "Attach nearby lines around cursor.",
+          action: "activeExcerpt"
+        });
+      }
 
-    const fullFileBlock = this.createFullFileContextBlock(editor);
-    if (fullFileBlock) {
-      candidates.push({
-        label: "Whole Active File",
-        description: fullFileBlock.label,
-        detail: fullFileBlock.truncated ? "File clipped to fit context budget." : undefined,
-        block: fullFileBlock
-      });
-    }
-
-    if (candidates.length === 0) {
-      vscode.window.showInformationMessage("No editor text available to attach as context.");
-      return;
-    }
-
-    const picks = await vscode.window.showQuickPick(candidates, {
-      canPickMany: true,
-      title: "Add Context To Next Message",
-      placeHolder: "Pick context to attach"
-    });
-
-    if (!picks || picks.length === 0) {
-      return;
-    }
-
-    const next = [...this.pendingContextBlocks];
-    for (const pick of picks) {
-      const existingIndex = next.findIndex((block) => block.id === pick.block.id);
-      if (existingIndex >= 0) {
-        next[existingIndex] = pick.block;
-      } else if (next.length < LSPilotChatViewProvider.maxContextBlocksPerTurn) {
-        next.push(pick.block);
+      const whole = this.createFullFileContextBlock(editor);
+      if (whole) {
+        items.push({
+          label: "Whole Active File",
+          description: whole.label,
+          detail: whole.truncated ? "File clipped to fit context budget." : "Attach full active file contents.",
+          action: "activeFile"
+        });
       }
     }
 
-    this.pendingContextBlocks = next;
-    this.postState();
+    items.push({
+      label: "Workspace Files...",
+      description: "Pick one or more files from your workspace",
+      detail: "Supports multi-select; files are clipped if too large.",
+      action: "workspaceFiles"
+    });
+    items.push({
+      label: "Whole Codebase Snapshot",
+      description: "Attach a bounded snapshot of many files in workspace",
+      detail: "Automatically skips generated/binary files and applies size limits.",
+      action: "codebase"
+    });
+
+    const picked = await vscode.window.showQuickPick(items, {
+      canPickMany: false,
+      title: "Add Context To Next Message",
+      placeHolder: "Choose what context to add"
+    });
+    if (!picked) {
+      return;
+    }
+
+    if (picked.action === "selection" && editor) {
+      const block = this.createSelectionContextBlock(editor);
+      if (block) {
+        this.addPendingContextBlocks([block]);
+      }
+      return;
+    }
+    if (picked.action === "activeExcerpt" && editor) {
+      const block = this.createActiveFileContextBlock(editor);
+      if (block) {
+        this.addPendingContextBlocks([block]);
+      }
+      return;
+    }
+    if (picked.action === "activeFile" && editor) {
+      const block = this.createFullFileContextBlock(editor);
+      if (block) {
+        this.addPendingContextBlocks([block]);
+      }
+      return;
+    }
+    if (picked.action === "workspaceFiles") {
+      const blocks = await this.promptForWorkspaceFilesContextBlocks();
+      this.addPendingContextBlocks(blocks);
+      return;
+    }
+    if (picked.action === "codebase") {
+      const block = await this.buildCodebaseContextBlock();
+      if (block) {
+        this.addPendingContextBlocks([block]);
+      } else {
+        vscode.window.showInformationMessage("LSPilot could not build a codebase context block from this workspace.");
+      }
+    }
   }
 
   private estimateUserPromptChars(message: ChatHistoryMessage): number {

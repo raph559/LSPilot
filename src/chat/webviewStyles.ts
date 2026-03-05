@@ -250,23 +250,47 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       border-radius: 4px;
       background: var(--input-bg);
     }
-    .msg-user-context {
+    .msg-user-context-details {
+      margin-bottom: 8px;
+    }
+    .msg-user-context-details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      user-select: none;
+      list-style: none; /* Hide default triangle in many browsers */
+    }
+    .msg-user-context-details summary::-webkit-details-marker {
+      display: none; /* Hide default triangle in WebKit */
+    }
+    .msg-user-context-details summary > i.codicon {
+      font-size: 14px;
+      margin-right: 2px;
+      transition: transform 0.1s;
+    }
+    .msg-user-context-details[open] summary > i.codicon {
+      transform: rotate(90deg);
+    }
+    .msg-user-context-body {
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 8px;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+      padding-left: 16px;
     }
     .msg-user-context-item {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--muted);
+      padding: 3px 6px;
+      border-radius: 4px;
+      color: var(--foreground);
       font-size: 11px;
-      background: color-mix(in srgb, var(--assistant-bg) 40%, transparent);
-      max-width: 100%;
+      background: transparent;
+      border: 1px solid var(--border);
+      max-width: fit-content;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;

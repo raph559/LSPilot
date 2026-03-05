@@ -451,23 +451,35 @@ export const chatWebviewScript = `
         }
       }
 
-      let userContextEl = wrapper.querySelector(".msg-user-context");
+      let userContextOuterEl = wrapper.querySelector(".msg-user-context-details");
       if (message.role === "user" && Array.isArray(message.contextBlocks) && message.contextBlocks.length > 0) {
-        if (!userContextEl) {
-          userContextEl = document.createElement("div");
-          userContextEl.className = "msg-user-context";
-          wrapper.appendChild(userContextEl);
+        if (!userContextOuterEl) {
+          userContextOuterEl = document.createElement("details");
+          userContextOuterEl.className = "msg-user-context-details";
+          wrapper.insertBefore(userContextOuterEl, wrapper.firstChild); // usually Copilot places it above the message
         }
-        userContextEl.innerHTML = "";
+        userContextOuterEl.innerHTML = "";
+        
+        const summary = document.createElement("summary");
+        const ctxCount = message.contextBlocks.length;
+        const usingText = ctxCount === 1 ? "Using 1 reference" : "Using " + ctxCount + " references";
+        
+        summary.innerHTML = '<i class="codicon codicon-chevron-right"></i><span>' + usingText + '</span>';
+        userContextOuterEl.appendChild(summary);
+
+        const body = document.createElement("div");
+        body.className = "msg-user-context-body";
+        userContextOuterEl.appendChild(body);
+
         for (const block of message.contextBlocks) {
-          const item = document.createElement("span");
+          const item = document.createElement("div");
           item.className = "msg-user-context-item";
           item.title = block.label || "Context";
-          item.textContent = block.label || "Context";
-          userContextEl.appendChild(item);
+          item.innerHTML = '<i class="codicon codicon-file-code" style="font-size: 12px; margin-right: 4px;"></i>' + (block.label || "Context");
+          body.appendChild(item);
         }
-      } else if (userContextEl) {
-        userContextEl.remove();
+      } else if (userContextOuterEl) {
+        userContextOuterEl.remove();
       }
 
       // Hide completely if empty (assistant/user with no text, not thinking)

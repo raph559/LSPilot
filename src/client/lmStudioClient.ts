@@ -159,6 +159,9 @@ function clipTail(text: string, maxChars: number): string {
   return text.slice(-maxChars);
 }
 
+const maxContextBlocksInPrompt = 96;
+const maxContextCharsInPrompt = 160_000;
+
 function serializeContextBlock(block: ChatContextBlock): string {
   const headerParts = [block.label];
   if (block.filePath) {
@@ -177,10 +180,47 @@ function serializeContextBlock(block: ChatContextBlock): string {
   return `<context ${headerParts.join(" ")}>\n${block.content}\n</context>`;
 }
 
+function serializeContextBlocksForPrompt(blocks: ChatContextBlock[]): string {
+  if (!Array.isArray(blocks) || blocks.length === 0) {
+    return "";
+  }
+
+  const sections: string[] = [];
+  let usedChars = 0;
+  let includedBlocks = 0;
+
+  for (const block of blocks.slice(0, maxContextBlocksInPrompt)) {
+    const serialized = serializeContextBlock(block);
+    const required = serialized.length + 2;
+
+    if (usedChars + required > maxContextCharsInPrompt) {
+      const remaining = maxContextCharsInPrompt - usedChars;
+      if (remaining > 512) {
+        sections.push(`${serialized.slice(0, remaining)}\n...[context truncated due to prompt size]`);
+        includedBlocks += 1;
+      }
+      break;
+    }
+
+    sections.push(serialized);
+    usedChars += required;
+    includedBlocks += 1;
+  }
+
+  const omittedBlocks = Math.max(0, blocks.length - includedBlocks);
+  if (omittedBlocks > 0) {
+    sections.push(
+      `<context-note omitted_blocks="${omittedBlocks}">Additional context blocks were omitted due to prompt size limits.</context-note>`
+    );
+  }
+
+  return sections.join("\n\n").trim();
+}
+
 function buildUserPromptText(message: ChatHistoryMessage): string {
   const text = clipTail(typeof message.content === "string" ? message.content : "", 12_000).trim();
   const contextBlocks = Array.isArray(message.contextBlocks) ? message.contextBlocks : [];
-  const contextText = contextBlocks.slice(0, 6).map(serializeContextBlock).join("\n\n").trim();
+  const contextText = serializeContextBlocksForPrompt(contextBlocks);
 
   if (text && contextText) {
     return `${text}\n\nAttached IDE context:\n${contextText}`;

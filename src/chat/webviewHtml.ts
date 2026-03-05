@@ -32,7 +32,7 @@ ${getWebviewStyles(extensionUri)}
     <div class="model" id="model">Model: None</div>
     <div class="actions">
       <button id="selectModel" class="secondary icon-only" title="Select Model"><i class="codicon codicon-hubot"></i></button>
-      <button id="clear" class="secondary icon-only" title="Clear Chat"><i class="codicon codicon-clear-all"></i></button>
+      <button id="clear" class="secondary icon-only" title="New Chat"><i class="codicon codicon-add"></i></button>
     </div>
   </div>
   <div id="messages"></div>
