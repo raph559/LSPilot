@@ -1505,8 +1505,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           } else if (this.mode === "plan") {
             const readOnlyTools = ["readFile", "readFileRange", "listDirectory", "pathExists", "fileStats", "findFiles", "searchInFiles"];
             toolsToUse = toolsDefinition.filter((t: any) => readOnlyTools.includes(t.function.name));
-            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a structured list of tasks.", parameters: { type: "object", properties: { tasks: { type: "array", items: { type: "object", properties: { id: { type: "number" }, title: { type: "string", description: "VERY concise title for the GUI (2-5 words)." }, description: { type: "string", description: "Detailed instructions the agent will need to complete this task." }, status: { type: "string", enum: ["todo", "in-progress", "done"], description: "Current status." } }, required: ["id", "title", "description", "status"] } } }, required: ["tasks"] } } });
-            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a JSON array of tasks so the plan is saved for the agent phase.";
+            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a structured list of tasks.", parameters: { type: "object", properties: { tasks: { type: "array", items: { type: "object", properties: { id: { type: "number" }, title: { type: "string", description: "VERY concise title for the GUI (2-5 words)." }, description: { type: "string", description: "Detailed instructions the agent will need to complete this task." }, status: { type: "string", enum: ["todo", "in-progress", "done"], description: "Current status (MUST be 'todo' when creating the plan)." } }, required: ["id", "title", "description", "status"] } } }, required: ["tasks"] } } });
+            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a JSON array of tasks so the plan is saved for the agent phase. All tasks MUST initially have the status 'todo'.";
           } else if (this.mode === "agent") {
             toolsToUse = [...toolsDefinition];
               if (this.plan) {
@@ -1640,6 +1640,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             if (tc.function.name === "setPlan" || tc.function.name === "updatePlan") {
               try {
                 const args = JSON.parse(tc.function.arguments);
+                if (tc.function.name === "setPlan") {
+                  args.tasks.forEach((t: any) => { t.status = "todo"; });
+                }
                 this.plan = args.tasks;
                 toolResult = { text: "Plan successfully saved and displayed." };
                 this.postState();
