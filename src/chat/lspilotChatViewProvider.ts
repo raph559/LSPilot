@@ -1505,12 +1505,12 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           } else if (this.mode === "plan") {
             const readOnlyTools = ["readFile", "readFileRange", "listDirectory", "pathExists", "fileStats", "findFiles", "searchInFiles"];
             toolsToUse = toolsDefinition.filter((t: any) => readOnlyTools.includes(t.function.name));
-            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a markdown checklist.", parameters: { type: "object", properties: { planText: { type: "string", description: "The plan formatted as a Markdown checklist." } }, required: ["planText"] } } });
-            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a markdown-formatted checklist string so the plan is saved for the agent phase.";
+            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a markdown checklist. Every step MUST be a checkbox like `- [ ] Step`.", parameters: { type: "object", properties: { planText: { type: "string", description: "The plan formatted as a Markdown checklist." } }, required: ["planText"] } } });
+            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a markdown-formatted checklist string so the plan is saved for the agent phase. The plan MUST be a strict checklist using `- [ ] ` syntax.";
           } else if (this.mode === "agent") {
             toolsToUse = [...toolsDefinition];
               if (this.plan) {
-                toolsToUse.push({ type: 'function', function: { name: 'updatePlan', description: 'Update the current step-by-step plan you are working on. Call this tool with an updated markdown checklist whenever you complete a step.', parameters: { type: 'object', properties: { planText: { type: 'string', description: 'The updated plan formatted as a Markdown checklist.' } }, required: ['planText'] } } });
+                toolsToUse.push({ type: 'function', function: { name: 'updatePlan', description: 'Update the current step-by-step plan you are working on. Call this tool with an updated markdown checklist whenever you complete a step. Every step MUST be a checkbox like `- [ ] Step`.', parameters: { type: 'object', properties: { planText: { type: 'string', description: 'The updated plan formatted as a Markdown checklist.' } }, required: ['planText'] } } });
               }
             if (this.plan) {
               systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + this.plan;

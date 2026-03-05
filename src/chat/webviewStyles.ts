@@ -1054,6 +1054,14 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       padding: 12px;
       font-size: 13px;
     }
+    .plan-container h1, .plan-container h2, .plan-container h3, .plan-container h4, .plan-container h5, .plan-container h6 {
+      font-size: 1em;
+      margin: 8px 0 4px 0;
+      font-weight: 600;
+    }
+    .plan-container p {
+      margin: 4px 0;
+    }
     .plan-container ul.contains-task-list {
       list-style-type: none;
       padding-left: 0;
