@@ -42,7 +42,10 @@ ${getWebviewStyles(extensionUri)}
       <button id="clear" class="secondary icon-only" title="New Chat"><i class="codicon codicon-add"></i></button>
     </div>
   </div>
-  <div id="planContainer" class="plan-container hidden"></div>
+  <details id="planContainer" class="plan-container hidden" open>
+    <summary style="cursor: pointer; font-weight: bold; margin-bottom: 8px; outline: none;">Current Plan</summary>
+    <div id="planContent"></div>
+  </details>
   <div id="messages"></div>
   <div id="commandApprovalHost" class="command-approval-host hidden"></div>
   <div id="embeddedTerminalHost" class="embedded-terminal-host hidden"></div>

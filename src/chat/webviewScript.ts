@@ -987,7 +987,8 @@ export const chatWebviewScript = `
       if (planContainerEl) {
         if (state.plan) {
           planContainerEl.classList.remove("hidden");
-          planContainerEl.innerHTML = "<b>Current Plan:</b><br/>" + state.plan;
+          const planContentEl = document.getElementById("planContent");
+          if (planContentEl) planContentEl.innerHTML = state.plan;
         } else {
           planContainerEl.classList.add("hidden");
         }
