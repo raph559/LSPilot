@@ -446,6 +446,143 @@ export const chatWebviewScript = `
       }
     }
 
+
+    function escapeHtml(text) {
+      return String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function getToolSummaryLabel(message, count) {
+      if (count > 1) {
+        if (
+          message.name === "runCommand" ||
+          message.name === "runInTerminal" ||
+          message.name === "readTerminal" ||
+          message.name === "sendTerminalInput"
+        ) {
+          return "Used " + (message.name || "tool") + " " + count + " times";
+        }
+        return "Used " + (message.name || "tool") + " on " + count + " files";
+      }
+      return message.toolSummary ? "Used " + message.toolSummary : "Used " + (message.name || "Tool");
+    }
+
+    function parseRunCommandContent(text) {
+      const normalized = typeof text === "string" ? text.replace(/\\r\\n/g, "\\n").trim() : "";
+      const parsed = {
+        status: "completed",
+        note: "",
+        stdout: "",
+        stderr: ""
+      };
+
+      if (!normalized || normalized === "[Starting terminal command...]") {
+        parsed.status = "running";
+        return parsed;
+      }
+
+      if (normalized.indexOf("Command failed:") === 0) {
+        parsed.status = "failed";
+        const firstBreak = normalized.indexOf("\\n");
+        parsed.note = firstBreak === -1 ? normalized : normalized.slice(0, firstBreak).trim();
+
+        const stdoutMatch = normalized.match(/(?:^|\\n\\n)STDOUT:\\n([\\s\\S]*?)(?=\\n\\nSTDERR:\\n|$)/);
+        const stderrMatch = normalized.match(/(?:^|\\n\\n)STDERR:\\n([\\s\\S]*)$/);
+        parsed.stdout = stdoutMatch ? stdoutMatch[1].trim() : "";
+        parsed.stderr = stderrMatch ? stderrMatch[1].trim() : "";
+
+        if (!parsed.stdout && !parsed.stderr && firstBreak !== -1) {
+          parsed.stderr = normalized.slice(firstBreak + 1).trim();
+        }
+
+        return parsed;
+      }
+
+      const stderrMarker = "\\nSTDERR:\\n";
+      const stderrIndex = normalized.indexOf(stderrMarker);
+      if (stderrIndex >= 0) {
+        parsed.stdout = normalized.slice(0, stderrIndex).trim();
+        parsed.stderr = normalized.slice(stderrIndex + stderrMarker.length).trim();
+      } else {
+        parsed.stdout = normalized;
+      }
+
+      return parsed;
+    }
+
+    function formatCommandTimeout(timeoutMs) {
+      if (typeof timeoutMs !== "number" || !isFinite(timeoutMs) || timeoutMs <= 0) {
+        return "";
+      }
+      if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+        return String(timeoutMs / 1000) + "s";
+      }
+      return String(timeoutMs) + "ms";
+    }
+
+    function renderRunCommandTool(message, addSpacing) {
+      const meta = message && message.toolMeta && typeof message.toolMeta === "object" ? message.toolMeta : {};
+      const command = typeof meta.command === "string" && meta.command.trim().length > 0
+        ? meta.command.trim()
+        : "(command unavailable)";
+      const cwd = typeof meta.cwd === "string" && meta.cwd.trim().length > 0 ? meta.cwd.trim() : "";
+      const timeoutLabel = formatCommandTimeout(meta.timeoutMs);
+      const parsed = parseRunCommandContent(message.content);
+      const statusText = parsed.status === "failed"
+        ? "Failed"
+        : parsed.status === "running"
+          ? "Running"
+          : "Completed";
+      
+      const isRunning = parsed.status === "running";
+
+      const metaParts = [];
+      if (cwd) {
+        metaParts.push("cwd: " + escapeHtml(cwd));
+      }
+      if (timeoutLabel) {
+        metaParts.push("timeout: " + escapeHtml(timeoutLabel));
+      }
+
+      const sections = [];
+      if (parsed.stdout) {
+        sections.push(escapeHtml(parsed.stdout));
+      }
+      if (parsed.stderr) {
+        sections.push('<span style="color: var(--vscode-errorForeground, #d64545);">' + escapeHtml(parsed.stderr) + '</span>');
+      }
+      let outputHtml = sections.join("\\n");
+      if (!outputHtml) {
+        let emptyMsg = parsed.status === "running" ? "Waiting for command output..." : "Command completed with no output.";
+        outputHtml = '<span class="embedded-terminal-empty">' + emptyMsg + '</span>';
+      }
+
+      return (
+        '<div class="embedded-terminal-panel" style="' + (addSpacing ? 'margin-top: 8px;' : '') + '">' +
+          '<div class="embedded-terminal-header">' +
+            '<span class="embedded-terminal-title">RunCommand</span>' +
+            (metaParts.length > 0 ? '<span class="embedded-terminal-meta" style="margin-left: 8px; opacity: 0.8; font-size: 10px;">' + metaParts.join(", ") + '</span>' : '') +
+            '<span class="embedded-terminal-status">' +
+              '<span class="embedded-terminal-status-dot' + (isRunning ? ' active' : ' idle') + '" style="' + (parsed.status === 'failed' ? 'background: var(--vscode-errorForeground, #d64545);' : '') + '"></span>' +
+              '<span class="embedded-terminal-status-label">' + statusText + '</span>' +
+            '</span>' +
+          '</div>' +
+          '<div class="embedded-terminal-body">' +
+            (parsed.note ? '<div class="embedded-terminal-note" style="color: ' + (parsed.status === 'failed' ? 'var(--vscode-errorForeground, #d64545)' : '') + ';">' + escapeHtml(parsed.note) + '</div>' : '') +
+            '<div class="embedded-terminal-input-row" style="border-top: none; border-bottom: 1px solid var(--border);">' +
+              '<span class="embedded-terminal-prompt">&gt;</span>' +
+              '<code style="font-family: inherit; font-size: inherit; color: var(--fg); white-space: pre-wrap;">' + escapeHtml(command) + '</code>' +
+            '</div>' +
+            '<pre class="embedded-terminal-output">' + outputHtml + '</pre>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
     function updateMessageDOM(message, index) {
       let outerWrapper = messagesEl.children[index];
       
@@ -539,11 +676,7 @@ export const chatWebviewScript = `
           const iconSvg = '<i class="codicon codicon-symbol-misc" style="margin-right: 6px; font-size: 14px; vertical-align: text-bottom;"></i>';
           
           const nameSpan = document.createElement("span");
-          if (message.toolSummary) {
-             nameSpan.innerHTML = iconSvg + " Used <b>" + message.toolSummary + "</b>";
-          } else {
-             nameSpan.innerHTML = iconSvg + " Used <b>" + (message.name || "Tool") + "</b>";
-          }
+          nameSpan.innerHTML = iconSvg + " <b>" + getToolSummaryLabel(message, 1) + "</b>";
 
           summary.appendChild(nameSpan);
           details.appendChild(summary);
@@ -605,7 +738,7 @@ export const chatWebviewScript = `
 
       if (message.role === "tool" && message._groupStart === index) {
         const count = message._relatedIndices.length;
-        const displayName = count > 1 ? "Used " + message.name + " on " + count + " files" : (message.toolSummary || "Used " + message.name);
+        const displayName = getToolSummaryLabel(message, count);
 
         const summarySpan = wrapper.querySelector('.tool-summary span');
         if (summarySpan) {
@@ -655,9 +788,11 @@ export const chatWebviewScript = `
                      '<button class="icon-btn" title="Open File"><i class="codicon codicon-go-to-file" style="font-size: 14px;"></i></button>' +
                   '</div>' +
                 '</div>';
+            } else if (m.name === "runCommand") {
+                combinedHtml += renderRunCommandTool(m, combinedHtml.length > 0);
             } else {
                 const text = m.content || "";
-                const safeText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                const safeText = escapeHtml(text);
                 combinedHtml += '<div class="global-edit-card" style="margin-top: 8px;"><div style="white-space:pre-wrap; font-family:var(--vscode-editor-font-family); font-size:12px;">' + safeText + '</div></div>';
             }
         }

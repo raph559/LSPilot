@@ -777,20 +777,19 @@ export class LMStudioClient {
   public invalidateModelCache(): void {
     this.cachedModel = undefined;
     this.modelCacheTimestamp = 0;
-    this.thinkingSupportCache.clear();
-    this.thinkingSupportProbePromises.clear();
-    this.reasoningOffResponseIdByModel.clear();
   }
 
   public clearThinkingSupportCache(model?: string): void {
     if (!model) {
       this.thinkingSupportCache.clear();
       this.thinkingSupportProbePromises.clear();
+      this.reasoningOffResponseIdByModel.clear();
       return;
     }
 
     this.thinkingSupportCache.delete(model);
     this.thinkingSupportProbePromises.delete(model);
+    this.reasoningOffResponseIdByModel.delete(model);
   }
 
   public resetReasoningOffSession(model?: string): void {
@@ -1174,19 +1173,20 @@ export class LMStudioClient {
     return typeof match?.size_bytes === "number" ? match.size_bytes : undefined;
   }
 
-  public async detectModelContextWindowTokens(token: vscode.CancellationToken): Promise<number | undefined> {
+  public async detectModelContextWindowTokens(token: vscode.CancellationToken, modelOverride?: string): Promise<number | undefined> {
     const settings = this.getSettings();
-    if (!settings.model) {
+    const modelToUse = modelOverride ?? settings.model;
+    if (!modelToUse) {
       return undefined;
     }
 
     try {
       const nativeModels = await this.fetchNativeModels(settings, token);
       const match = nativeModels.find((entry) => {
-        if (entry.key === settings.model) {
+        if (entry.key === modelToUse) {
           return true;
         }
-        return (entry.loaded_instances ?? []).some((instance) => instance.id === settings.model);
+        return (entry.loaded_instances ?? []).some((instance) => instance.id === modelToUse);
       });
       if (!match) {
         return undefined;

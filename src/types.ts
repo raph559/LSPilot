@@ -158,6 +158,12 @@ export interface ChatHistoryMessage {
   name?: string;
   toolSummary?: string;
   tool_call_id?: string;
+  toolMeta?: {
+    command?: string;
+    cwd?: string;
+    timeoutMs?: number;
+    terminalId?: string;
+  };
   resolvedPath?: string;
   fileEdit?: {
     filePath: string;

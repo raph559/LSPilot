@@ -93,8 +93,11 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("lspilot.baseUrl") || event.affectsConfiguration("lspilot.model")) {
+      if (event.affectsConfiguration("lspilot.baseUrl")) {
         client.invalidateModelCache();
+        client.clearThinkingSupportCache();
+      }
+      if (event.affectsConfiguration("lspilot.baseUrl") || event.affectsConfiguration("lspilot.model")) {
         void restoreRememberedModel();
       }
       if (

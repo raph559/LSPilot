@@ -88,23 +88,28 @@ export async function selectModel(client: LMStudioClient): Promise<void> {
         cancellable: true
       },
       async (progress, progressToken) => {
-        progress.report({ message: "Saving model setting..." });
-
-        await vscode.workspace
-          .getConfiguration("lspilot")
-          .update("model", selected.model, vscode.ConfigurationTarget.Global);
-
-        client.invalidateModelCache();
-
         if (selected.model) {
           await loadModelWithProgress(client, selected.model, progress, progressToken);
+          progress.report({ message: "Checking model capabilities..." });
+          try {
+            await client.detectModelThinkingSupport(progressToken, selected.model);
+            await client.detectModelContextWindowTokens(progressToken);
+          } catch {
+            // Ignore capability probe errors.
+          }
         } else {
           progress.report({ message: "Unloading current model..." });
           if (settings.model) {
             await client.unloadModel(settings.model, progressToken);
           }
-          progress.report({ message: "Clearing selected model." });
         }
+
+        progress.report({ message: "Saving model setting..." });
+        await vscode.workspace
+          .getConfiguration("lspilot")
+          .update("model", selected.model, vscode.ConfigurationTarget.Global);
+
+        client.invalidateModelCache();
       }
     );
 

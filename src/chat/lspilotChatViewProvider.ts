@@ -800,116 +800,152 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       .replace(/'/g, "&#39;");
   }
 
+  private parseToolArgs(argsString: string): Record<string, unknown> | undefined {
+    try {
+      const parsed = JSON.parse(argsString) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return undefined;
+      }
+      return parsed as Record<string, unknown>;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private buildToolMeta(toolName: string, argsString: string): ChatHistoryMessage["toolMeta"] | undefined {
+    const argsObj = this.parseToolArgs(argsString);
+    if (!argsObj) {
+      return undefined;
+    }
+
+    switch (toolName) {
+      case "runCommand":
+      case "runInTerminal":
+        return {
+          command: typeof argsObj.command === "string" ? argsObj.command : undefined,
+          cwd: typeof argsObj.cwd === "string" ? argsObj.cwd : undefined,
+          timeoutMs: typeof argsObj.timeoutMs === "number" ? argsObj.timeoutMs : undefined,
+          terminalId: typeof argsObj.id === "string" ? argsObj.id : undefined
+        };
+      case "readTerminal":
+      case "sendTerminalInput":
+        return {
+          terminalId: typeof argsObj.id === "string" ? argsObj.id : undefined
+        };
+      default:
+        return undefined;
+    }
+  }
+
   private buildToolSummary(toolName: string, argsString: string): string {
     let summaryInfo = toolName;
+    const argsObj = this.parseToolArgs(argsString);
+    if (!argsObj) {
+      return summaryInfo;
+    }
 
-    try {
-      const argsObj = JSON.parse(argsString) as Record<string, unknown>;
-      const shortText = (value: unknown, maxLength = 48): string => {
-        const raw = typeof value === "string" ? value.trim() : "";
-        if (!raw) {
-          return "";
-        }
-        return raw.length > maxLength ? `${raw.substring(0, maxLength)}...` : raw;
-      };
-      const leafName = (value: unknown, fallback = ""): string => {
-        const raw = typeof value === "string" ? value.trim() : "";
-        if (!raw) {
-          return fallback;
-        }
-        return path.basename(raw) || raw;
-      };
-
-      switch (toolName) {
-        case "writeFile":
-        case "appendFile":
-        case "replaceInFile":
-        case "readFile":
-        case "readFileRange": {
-          const rawPath = typeof argsObj.filePath === "string" ? argsObj.filePath : "";
-          const file = leafName(rawPath);
-          if (file) {
-            summaryInfo += ` on <b>${this.escapeHtml(file)}</b>`;
-          }
-          break;
-        }
-        case "pathExists":
-        case "fileStats":
-        case "deletePath": {
-          const rawPath = typeof argsObj.targetPath === "string" ? argsObj.targetPath : "";
-          const file = leafName(rawPath);
-          if (file) {
-            summaryInfo += ` on <b>${this.escapeHtml(file)}</b>`;
-          }
-          break;
-        }
-        case "listDirectory":
-        case "createDirectory": {
-          const rawDir = typeof argsObj.dirPath === "string" ? argsObj.dirPath : "";
-          const dir = leafName(rawDir, "/");
-          summaryInfo += ` in <b>${this.escapeHtml(dir || "/")}</b>`;
-          break;
-        }
-        case "runCommand":
-        case "runInTerminal": {
-          const id = shortText(argsObj.id, 24);
-          const cmd = shortText(argsObj.command, 64);
-          if (id) {
-            summaryInfo += ` in <code>${this.escapeHtml(id)}</code>`;
-          }
-          if (cmd) {
-            summaryInfo += ` <code>${this.escapeHtml(cmd)}</code>`;
-          }
-          break;
-        }
-        case "readTerminal": {
-          const id = shortText(argsObj.id, 24);
-          if (id) {
-            summaryInfo += ` (Terminal <code>${this.escapeHtml(id)}</code>)`;
-          }
-          break;
-        }
-        case "sendTerminalInput": {
-          const id = shortText(argsObj.id, 24);
-          const txt = shortText(argsObj.text, 32);
-          if (id && txt) {
-            summaryInfo += ` to <code>${this.escapeHtml(id)}</code>: <code>${this.escapeHtml(txt)}</code>`;
-          } else if (id) {
-             summaryInfo += ` to <code>${this.escapeHtml(id)}</code>`;
-          }
-          break;
-        }
-        case "findFiles": {
-          const pattern = shortText(argsObj.globPattern);
-          if (pattern) {
-            summaryInfo += ` <code>${this.escapeHtml(pattern)}</code>`;
-          }
-          break;
-        }
-        case "searchInFiles": {
-          const query = shortText(argsObj.query);
-          if (query) {
-            summaryInfo += ` for <code>${this.escapeHtml(query)}</code>`;
-          }
-          break;
-        }
-        case "renamePath": {
-          const from = leafName(argsObj.oldPath, "source");
-          const to = leafName(argsObj.newPath, "target");
-          summaryInfo += ` <code>${this.escapeHtml(from)}</code> -> <code>${this.escapeHtml(to)}</code>`;
-          break;
-        }
-        case "copyPath": {
-          const from = leafName(argsObj.sourcePath, "source");
-          const to = leafName(argsObj.destinationPath, "target");
-          summaryInfo += ` <code>${this.escapeHtml(from)}</code> -> <code>${this.escapeHtml(to)}</code>`;
-          break;
-        }
-        default:
-          break;
+    const shortText = (value: unknown, maxLength = 48): string => {
+      const raw = typeof value === "string" ? value.trim() : "";
+      if (!raw) {
+        return "";
       }
-    } catch {
-      // Ignore malformed tool args; fallback summary is just the tool name.
+      return raw.length > maxLength ? `${raw.substring(0, maxLength)}...` : raw;
+    };
+    const leafName = (value: unknown, fallback = ""): string => {
+      const raw = typeof value === "string" ? value.trim() : "";
+      if (!raw) {
+        return fallback;
+      }
+      return path.basename(raw) || raw;
+    };
+
+    switch (toolName) {
+      case "writeFile":
+      case "appendFile":
+      case "replaceInFile":
+      case "readFile":
+      case "readFileRange": {
+        const rawPath = typeof argsObj.filePath === "string" ? argsObj.filePath : "";
+        const file = leafName(rawPath);
+        if (file) {
+          summaryInfo += ` on <b>${this.escapeHtml(file)}</b>`;
+        }
+        break;
+      }
+      case "pathExists":
+      case "fileStats":
+      case "deletePath": {
+        const rawPath = typeof argsObj.targetPath === "string" ? argsObj.targetPath : "";
+        const file = leafName(rawPath);
+        if (file) {
+          summaryInfo += ` on <b>${this.escapeHtml(file)}</b>`;
+        }
+        break;
+      }
+      case "listDirectory":
+      case "createDirectory": {
+        const rawDir = typeof argsObj.dirPath === "string" ? argsObj.dirPath : "";
+        const dir = leafName(rawDir, "/");
+        summaryInfo += ` in <b>${this.escapeHtml(dir || "/")}</b>`;
+        break;
+      }
+      case "runCommand":
+      case "runInTerminal": {
+        const id = shortText(argsObj.id, 24);
+        const cmd = shortText(argsObj.command, 64);
+        if (id) {
+          summaryInfo += ` in <code>${this.escapeHtml(id)}</code>`;
+        }
+        if (cmd) {
+          summaryInfo += ` <code>${this.escapeHtml(cmd)}</code>`;
+        }
+        break;
+      }
+      case "readTerminal": {
+        const id = shortText(argsObj.id, 24);
+        if (id) {
+          summaryInfo += ` (Terminal <code>${this.escapeHtml(id)}</code>)`;
+        }
+        break;
+      }
+      case "sendTerminalInput": {
+        const id = shortText(argsObj.id, 24);
+        const txt = shortText(argsObj.text, 32);
+        if (id && txt) {
+          summaryInfo += ` to <code>${this.escapeHtml(id)}</code>: <code>${this.escapeHtml(txt)}</code>`;
+        } else if (id) {
+          summaryInfo += ` to <code>${this.escapeHtml(id)}</code>`;
+        }
+        break;
+      }
+      case "findFiles": {
+        const pattern = shortText(argsObj.globPattern);
+        if (pattern) {
+          summaryInfo += ` <code>${this.escapeHtml(pattern)}</code>`;
+        }
+        break;
+      }
+      case "searchInFiles": {
+        const query = shortText(argsObj.query);
+        if (query) {
+          summaryInfo += ` for <code>${this.escapeHtml(query)}</code>`;
+        }
+        break;
+      }
+      case "renamePath": {
+        const from = leafName(argsObj.oldPath, "source");
+        const to = leafName(argsObj.newPath, "target");
+        summaryInfo += ` <code>${this.escapeHtml(from)}</code> -> <code>${this.escapeHtml(to)}</code>`;
+        break;
+      }
+      case "copyPath": {
+        const from = leafName(argsObj.sourcePath, "source");
+        const to = leafName(argsObj.destinationPath, "target");
+        summaryInfo += ` <code>${this.escapeHtml(from)}</code> -> <code>${this.escapeHtml(to)}</code>`;
+        break;
+      }
+      default:
+        break;
     }
 
     return summaryInfo;
@@ -943,12 +979,6 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.detectedContextWindowTokens = undefined;
     this.lastThinkingSupportModel = undefined;
     this.client.resetReasoningOffSession();
-    const model = this.client.getSettings().model?.trim();
-    if (model) {
-      this.client.clearThinkingSupportCache(model);
-    } else {
-      this.client.clearThinkingSupportCache();
-    }
     this.postState();
   }
 
@@ -1365,11 +1395,13 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           runNext = true;
           for (const tc of result.tool_calls) {
             const summaryInfo = this.buildToolSummary(tc.function.name, tc.function.arguments);
+            const toolMeta = this.buildToolMeta(tc.function.name, tc.function.arguments);
             const toolMessage: ChatHistoryMessage = {
               role: "tool",
               name: tc.function.name,
               toolSummary: summaryInfo,
               tool_call_id: tc.id,
+              toolMeta,
               content: tc.function.name === "runCommand" || tc.function.name === "runInTerminal"
                 ? "[Starting terminal command...]"
                 : ""
