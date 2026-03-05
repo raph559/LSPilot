@@ -12,6 +12,8 @@ export const chatWebviewScript = `
     const contextChipsEl = document.getElementById("contextChips");
     const clearBtn = document.getElementById("clear");
     const selectModelBtn = document.getElementById("selectModel");
+    const chatModeEl = document.getElementById("chatMode");
+    const planContainerEl = document.getElementById("planContainer");
     const modelEl = document.getElementById("model");
     const contextEl = document.getElementById("context");
     const contextLabelEl = document.getElementById("contextLabel");
@@ -19,7 +21,7 @@ export const chatWebviewScript = `
     const embeddedTerminalHostEl = document.getElementById("embeddedTerminalHost");
     const commandApprovalHostEl = document.getElementById("commandApprovalHost");
 
-    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [], embeddedTerminal: undefined, embeddedTerminalVisible: false, activeCommandApproval: undefined };
+    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [], embeddedTerminal: undefined, embeddedTerminalVisible: false, activeCommandApproval: undefined, mode: "agent", plan: undefined };
     let timerInterval = null;
     let promptHistory = [];
     let promptHistoryIndex = -1;
@@ -981,6 +983,15 @@ export const chatWebviewScript = `
     }
 
     function render() {
+      if (chatModeEl) chatModeEl.value = state.mode || "agent";
+      if (planContainerEl) {
+        if (state.plan) {
+          planContainerEl.classList.remove("hidden");
+          planContainerEl.innerHTML = "<b>Current Plan:</b><br/>" + state.plan;
+        } else {
+          planContainerEl.classList.add("hidden");
+        }
+      }
       let currentGroupStart = -1;
       for (let i = 0; i < state.messages.length; i++) {
         const msg = state.messages[i];
@@ -1238,6 +1249,7 @@ export const chatWebviewScript = `
       vscode.postMessage({ type: "clear" });
     });
     selectModelBtn.addEventListener("click", () => vscode.postMessage({ type: "selectModel" }));
+    chatModeEl.addEventListener("change", (e) => vscode.postMessage({ type: "changeMode", mode: e.target.value }));
     inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();

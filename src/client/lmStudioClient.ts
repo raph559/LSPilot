@@ -1395,7 +1395,7 @@ export class LMStudioClient {
     token: vscode.CancellationToken,
     onUpdate?: (chunk: { response: string; reasoning?: string; usage?: ChatTokenUsage }) => void,
     tools?: any[],
-    options?: { enableThinking?: boolean }
+    options?: { enableThinking?: boolean; systemPromptOverride?: string }
   ): Promise<{ model: string; response: string; reasoning?: string; usage?: ChatTokenUsage; tool_calls?: any[] }> {
     const settings = this.getSettings();
     const model = await this.resolveModel(settings);
@@ -1426,7 +1426,7 @@ export class LMStudioClient {
     const maxTokensToUse = detectedContext && detectedContext > 0 ? detectedContext : -1;
 
     const messages: LMStudioMessage[] = [
-      { role: "system", content: settings.chatSystemPrompt },
+        { role: "system", content: options?.systemPromptOverride || settings.chatSystemPrompt },
       ...contextualHistory.map((message): LMStudioMessage => {
         const msg: LMStudioMessage = {
           role: message.role,

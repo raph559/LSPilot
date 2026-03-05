@@ -84,6 +84,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "lspilot.chatView";
 
   private view: vscode.WebviewView | undefined;
+  private mode: "ask" | "plan" | "agent" = "agent";
+  private plan: string | undefined;
   private history: ChatHistoryMessage[] = [];
   private busy = false;
   private activeRequest: vscode.CancellationTokenSource | undefined;
@@ -1236,6 +1238,12 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       choice?: unknown;
     };
 
+    if (message.type === "changeMode" && typeof (message as any).mode === "string") {
+      this.mode = (message as any).mode as "ask" | "plan" | "agent";
+      this.postState();
+      return;
+    }
+
     if (message.type === "ready") {
       this.postState();
       return;
@@ -1484,6 +1492,26 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       while (runNext && !tokenSource.token.isCancellationRequested) {
         runNext = false;
         
+          let toolsToUse: any[] | undefined = undefined;
+          let systemPromptOverride: string | undefined = undefined;
+          if (this.mode === "ask") {
+            const readOnlyTools = ["readFile", "readFileRange", "listDirectory", "pathExists", "fileStats", "findFiles", "searchInFiles"];
+            toolsToUse = toolsDefinition.filter((t: any) => readOnlyTools.includes(t.function.name));
+            systemPromptOverride = "You are in ASK mode. Answer the user's questions. You can use tools to read code if needed, but you must not attempt to modify any files or execute commands. The user is asking a question.";
+          } else if (this.mode === "plan") {
+            const readOnlyTools = ["readFile", "readFileRange", "listDirectory", "pathExists", "fileStats", "findFiles", "searchInFiles"];
+            toolsToUse = toolsDefinition.filter((t: any) => readOnlyTools.includes(t.function.name));
+            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a markdown checklist.", parameters: { type: "object", properties: { planText: { type: "string", description: "The plan formatted as a Markdown checklist." } }, required: ["planText"] } } });
+            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a markdown-formatted checklist string so the plan is saved for the agent phase.";
+          } else if (this.mode === "agent") {
+            toolsToUse = [...toolsDefinition];
+              if (this.plan) {
+                toolsToUse.push({ type: 'function', function: { name: 'updatePlan', description: 'Update the current step-by-step plan you are working on. Call this tool with an updated markdown checklist whenever you complete a step.', parameters: { type: 'object', properties: { planText: { type: 'string', description: 'The updated plan formatted as a Markdown checklist.' } }, required: ['planText'] } } });
+              }
+            if (this.plan) {
+              systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + this.plan;
+            }
+          }
         const requestHistory = [...this.history];
         this.history.push({ role: "assistant", content: "" });
         this.postState();
@@ -1519,7 +1547,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             this.lastTokenUsage = chunk.usage;
           }
           this.postState();
-        }, toolsDefinition, { enableThinking });
+        }, toolsToUse, { enableThinking, systemPromptOverride });
 
         const assistantMessage = this.history[assistantIndex];
         if (assistantMessage && assistantMessage.role === "assistant") {
@@ -1604,7 +1632,18 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
               }
             }
 
-            const toolResult = await executeTool(tc.function.name, tc.function.arguments, {
+            let toolResult;
+            if (tc.function.name === "setPlan" || tc.function.name === "updatePlan") {
+              try {
+                const args = JSON.parse(tc.function.arguments);
+                this.plan = args.planText;
+                toolResult = { text: "Plan successfully saved and displayed to user in Plan mode." };
+                this.postState();
+              } catch (e) {
+                toolResult = { text: "Failed to parse arguments" };
+              }
+            } else {
+            toolResult = await executeTool(tc.function.name, tc.function.arguments, {
               onUpdate: (text) => {
                 if (this.activeRequest !== tokenSource || tokenSource.token.isCancellationRequested) {
                   return;
@@ -1620,7 +1659,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
                 this.setActiveEmbeddedTerminal(terminalSession.id);
                 this.refreshEmbeddedTerminalSnapshot();
               }
-            });
+              });
+            }
 
             this.coalescePendingFileEdit(toolResult.fileEdit);
 
@@ -1771,6 +1811,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       type: "state",
       busy: this.busy,
       busyStartTimeMs: this.busyStartTimeMs,
+      mode: this.mode,
+      plan: this.plan ? md.render(this.plan) : undefined,
       modelLabel,
       modelLoading: this.modelLoadInProgress,
       thinkingEnabled: this.thinkingEnabled,

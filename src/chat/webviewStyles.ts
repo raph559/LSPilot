@@ -1048,5 +1048,19 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       color: var(--muted) !important;
       border-left-color: var(--vscode-textBlockQuote-border) !important;
     }
-    `;
+    .plan-container {
+      background: var(--vscode-editor-background);
+      border-bottom: 1px solid var(--border);
+      padding: 12px;
+      font-size: 13px;
+    }
+    .plan-container.hidden { display: none; }
+        .dropdown {
+      background: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: 4px;
+      padding: 2px 4px;
+    }
+  `;
 }

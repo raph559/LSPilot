@@ -118,6 +118,8 @@ export interface LMStudioMessage {
   tool_call_id?: string;
 }
 
+export type ChatMode = "ask" | "plan" | "agent";
+
 export interface ChatImageAttachment {
   id: string;
   name: string;

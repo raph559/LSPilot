@@ -29,12 +29,20 @@ ${getWebviewStyles(extensionUri)}
 </head>
 <body>
   <div class="toolbar">
-    <div class="model" id="model">Model: None</div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <select id="chatMode" class="dropdown" title="Select Mode">
+        <option value="ask">Ask</option>
+        <option value="plan">Plan</option>
+        <option value="agent" selected>Agent</option>
+      </select>
+      <div class="model" id="model">Model: None</div>
+    </div>
     <div class="actions">
       <button id="selectModel" class="secondary icon-only" title="Select Model"><i class="codicon codicon-hubot"></i></button>
       <button id="clear" class="secondary icon-only" title="New Chat"><i class="codicon codicon-add"></i></button>
     </div>
   </div>
+  <div id="planContainer" class="plan-container hidden"></div>
   <div id="messages"></div>
   <div id="commandApprovalHost" class="command-approval-host hidden"></div>
   <div id="embeddedTerminalHost" class="embedded-terminal-host hidden"></div>
