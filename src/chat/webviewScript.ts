@@ -17,8 +17,9 @@ export const chatWebviewScript = `
     const contextLabelEl = document.getElementById("contextLabel");
     const contextFillEl = document.getElementById("contextFill");
     const embeddedTerminalHostEl = document.getElementById("embeddedTerminalHost");
+    const commandApprovalHostEl = document.getElementById("commandApprovalHost");
 
-    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [], embeddedTerminal: undefined, embeddedTerminalVisible: false };
+    let state = { busy: false, busyStartTimeMs: undefined, modelLabel: "None", modelLoading: false, thinkingEnabled: false, thinkingSupported: false, messages: [], contextUsage: undefined, pendingContextBlocks: [], embeddedTerminal: undefined, embeddedTerminalVisible: false, activeCommandApproval: undefined };
     let timerInterval = null;
     let promptHistory = [];
     let promptHistoryIndex = -1;
@@ -209,6 +210,65 @@ export const chatWebviewScript = `
 
         contextChipsEl.appendChild(chip);
       }
+    }
+
+    function renderCommandApproval() {
+      if (!commandApprovalHostEl) return;
+      if (!state.activeCommandApproval) {
+        commandApprovalHostEl.classList.add("hidden");
+        commandApprovalHostEl.innerHTML = "";
+        return;
+      }
+      commandApprovalHostEl.classList.remove("hidden");
+      commandApprovalHostEl.innerHTML = "";
+
+      const approval = state.activeCommandApproval;
+
+      const container = document.createElement("div");
+      container.className = "command-approval-container";
+
+      const header = document.createElement("div");
+      header.className = "command-approval-header";
+      header.innerHTML = '<i class="codicon codicon-warning"></i><span>' + escapeHtml(approval.title || "Command Approval") + '</span>';
+      container.appendChild(header);
+
+      const detail = document.createElement("div");
+      detail.className = "command-approval-detail";
+      detail.textContent = approval.detail || "Do you want to allow this command?";
+      container.appendChild(detail);
+
+      const actions = document.createElement("div");
+      actions.className = "command-approval-actions";
+
+      const allowBtn = document.createElement("button");
+      allowBtn.className = "approval-btn allow";
+      allowBtn.textContent = "Allow";
+      allowBtn.addEventListener("click", () => {
+        vscode.postMessage({ type: "approveCommand", choice: "allow" });
+      });
+      actions.appendChild(allowBtn);
+
+      const denyBtn = document.createElement("button");
+      denyBtn.className = "approval-btn deny";
+      denyBtn.textContent = "Deny";
+      denyBtn.addEventListener("click", () => {
+        vscode.postMessage({ type: "approveCommand", choice: "deny" });
+      });
+      actions.appendChild(denyBtn);
+
+      const allowChatBtn = document.createElement("button");
+      allowChatBtn.className = "approval-btn secondary";
+      allowChatBtn.textContent = "Allow all commands in this chat";
+      allowChatBtn.addEventListener("click", () => {
+        vscode.postMessage({ type: "approveCommand", choice: "alwaysThisChat" });
+      });
+      actions.appendChild(allowChatBtn);
+
+      container.appendChild(actions);
+      commandApprovalHostEl.appendChild(container);
+
+      // Scroll so it's visible
+      commandApprovalHostEl.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
 
     function renderEmbeddedTerminal() {
@@ -485,6 +545,21 @@ export const chatWebviewScript = `
         return parsed;
       }
 
+      if (normalized === "[Waiting for permission to run command...]") {
+        parsed.status = "pending";
+        parsed.note = "Waiting for your approval before the command runs.";
+        return parsed;
+      }
+
+      if (
+        normalized === "Command execution was denied by the user." ||
+        normalized === "Command execution was cancelled before approval completed."
+      ) {
+        parsed.status = "failed";
+        parsed.note = normalized;
+        return parsed;
+      }
+
       if (normalized.indexOf("Command failed:") === 0) {
         parsed.status = "failed";
         const firstBreak = normalized.indexOf("\\n");
@@ -534,6 +609,8 @@ export const chatWebviewScript = `
       const parsed = parseRunCommandContent(message.content);
       const statusText = parsed.status === "failed"
         ? "Failed"
+        : parsed.status === "pending"
+          ? "Awaiting Approval"
         : parsed.status === "running"
           ? "Running"
           : "Completed";
@@ -557,7 +634,11 @@ export const chatWebviewScript = `
       }
       let outputHtml = sections.join("\\n");
       if (!outputHtml) {
-        let emptyMsg = parsed.status === "running" ? "Waiting for command output..." : "Command completed with no output.";
+        let emptyMsg = parsed.status === "running"
+          ? "Waiting for command output..."
+          : parsed.status === "pending"
+            ? "Command has not run yet."
+            : "Command completed with no output.";
         outputHtml = '<span class="embedded-terminal-empty">' + emptyMsg + '</span>';
       }
 
@@ -1027,6 +1108,7 @@ export const chatWebviewScript = `
         }
       }
 
+      renderCommandApproval();
       renderEmbeddedTerminal();
       renderPendingContextChips();
       renderPendingImages();

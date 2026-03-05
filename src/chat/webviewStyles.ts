@@ -195,6 +195,68 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
       gap: 24px;
       scroll-behavior: smooth;
     }
+    .command-approval-host {
+      flex: 0 0 auto;
+      padding: 0 16px 16px;
+    }
+    .command-approval-container {
+      border: 1px solid var(--vscode-charts-yellow, #cca700);
+      border-radius: 6px;
+      padding: 12px;
+      background: var(--vscode-editor-background);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .command-approval-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      color: var(--vscode-charts-yellow, #cca700);
+    }
+    .command-approval-detail {
+      font-size: 12px;
+      color: var(--fg);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .command-approval-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .approval-btn {
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--btn-secondary);
+      color: var(--btn-secondary-fg);
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+    }
+    .approval-btn:hover {
+      background: var(--btn-secondary-hover);
+    }
+    .approval-btn.allow {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: transparent;
+    }
+    .approval-btn.allow:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .approval-btn.deny {
+      background: var(--vscode-errorForeground);
+      color: white;
+      border-color: transparent;
+    }
+    .approval-btn.deny:hover {
+      opacity: 0.9;
+    }
     .embedded-terminal-host {
       flex: 0 0 auto;
       padding: 16px 16px 12px;

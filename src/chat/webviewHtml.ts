@@ -36,6 +36,7 @@ ${getWebviewStyles(extensionUri)}
     </div>
   </div>
   <div id="messages"></div>
+  <div id="commandApprovalHost" class="command-approval-host hidden"></div>
   <div id="embeddedTerminalHost" class="embedded-terminal-host hidden"></div>
   <div class="composer">
     <div id="globalPendingEdits" class="global-pending-edits"></div>

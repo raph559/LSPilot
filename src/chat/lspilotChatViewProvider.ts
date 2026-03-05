@@ -71,6 +71,15 @@ import {
 } from "./tools";
 import { LSPilotDiffProvider } from "./lspilotDiffProvider";
 
+type CommandApprovalRequest = {
+  key: string;
+  title: string;
+  detail: string;
+  pendingText: string;
+  deniedText: string;
+  startText?: string;
+};
+
 export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "lspilot.chatView";
 
@@ -93,6 +102,13 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
   private embeddedTerminalVisible = false;
   private embeddedTerminalPollHandle: NodeJS.Timeout | undefined;
   private embeddedTerminalSnapshot: ManagedTerminalSnapshot | undefined = undefined;
+  private allowCommandExecutionForConversation = false;
+  private readonly sessionAllowedCommandKeys = new Set<string>();
+  private readonly sessionDeniedCommandKeys = new Set<string>();
+  private activeCommandApproval?: {
+    request: CommandApprovalRequest;
+    resolve: (result: { approved: boolean; resultText?: string }) => void;
+  };
 
   private static readonly maxImageAttachmentsPerTurn = 6;
   private static readonly maxImageSizeBytes = 8 * 1024 * 1024;
@@ -812,6 +828,133 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private isCommandExecutionTool(toolName: string): boolean {
+    return toolName === "runCommand" || toolName === "runInTerminal" || toolName === "sendTerminalInput";
+  }
+
+  private resolveCommandPath(value: string): string {
+    const normalized = value.trim();
+    if (!normalized) {
+      return normalized;
+    }
+    if (path.isAbsolute(normalized)) {
+      return path.normalize(normalized);
+    }
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (workspaceRoot) {
+      return path.normalize(path.join(workspaceRoot, normalized));
+    }
+
+    return path.normalize(path.join(process.cwd(), normalized));
+  }
+
+  private getDefaultCommandWorkingDirectory(): string {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || process.cwd();
+  }
+
+  private buildCommandApprovalRequest(toolName: string, argsString: string): CommandApprovalRequest | undefined {
+    const argsObj = this.parseToolArgs(argsString);
+    const rawArgsDetail = argsString.trim();
+
+    if (toolName === "sendTerminalInput") {
+      const terminalId = typeof argsObj?.id === "string" ? argsObj.id.trim() : "";
+      const text = typeof argsObj?.text === "string" ? argsObj.text : "";
+      const detailLines = [
+        "Tool: sendTerminalInput",
+        terminalId ? `Terminal: ${terminalId}` : "Terminal: (not specified)",
+        text ? `Input:\n${text}` : rawArgsDetail ? `Arguments:\n${rawArgsDetail}` : "Input: (unavailable)"
+      ];
+
+      return {
+        key: JSON.stringify({ toolName, terminalId, text }),
+        title: "LSPilot wants to send terminal input.",
+        detail: detailLines.join("\n"),
+        pendingText: "[Waiting for permission to send terminal input...]",
+        deniedText: "Terminal input was not sent because the user denied permission."
+      };
+    }
+
+    if (toolName !== "runCommand" && toolName !== "runInTerminal") {
+      return undefined;
+    }
+
+    const command = typeof argsObj?.command === "string" ? argsObj.command : "";
+    const cwd = typeof argsObj?.cwd === "string" && argsObj.cwd.trim().length > 0
+      ? this.resolveCommandPath(argsObj.cwd)
+      : this.getDefaultCommandWorkingDirectory();
+    const timeoutMs = typeof argsObj?.timeoutMs === "number" && Number.isFinite(argsObj.timeoutMs)
+      ? Math.max(0, Math.floor(argsObj.timeoutMs))
+      : toolName === "runCommand"
+        ? 60_000
+        : 60_000;
+    const terminalId = typeof argsObj?.id === "string" ? argsObj.id.trim() : "";
+    const isBackground = toolName === "runInTerminal" && argsObj?.isBackground === true;
+    const detailLines = [
+      `Tool: ${toolName}`,
+      command ? `Command: ${command}` : rawArgsDetail ? `Arguments:\n${rawArgsDetail}` : "Command: (unavailable)",
+      `Working directory: ${cwd}`
+    ];
+
+    if (toolName === "runInTerminal") {
+      detailLines.push(`Terminal: ${terminalId || "(new terminal)"}`);
+      detailLines.push(`Background: ${isBackground ? "yes" : "no"}`);
+    }
+
+    return {
+      key: JSON.stringify({ toolName, command, cwd, timeoutMs, terminalId, isBackground }),
+      title: "LSPilot wants to run a command.",
+      detail: detailLines.join("\n"),
+      pendingText: "[Waiting for permission to run command...]",
+      deniedText: "Command execution was denied by the user.",
+      startText: "[Starting terminal command...]"
+    };
+  }
+
+  private async requestCommandApproval(
+    request: CommandApprovalRequest,
+    token: vscode.CancellationToken
+  ): Promise<{ approved: boolean; resultText?: string }> {
+    if (this.allowCommandExecutionForConversation || this.sessionAllowedCommandKeys.has(request.key)) {
+      return { approved: true };
+    }
+
+    if (this.sessionDeniedCommandKeys.has(request.key)) {
+      return { approved: false, resultText: request.deniedText };
+    }
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const finish = (result: { approved: boolean; resultText?: string }) => {
+        if (!resolved) {
+          resolved = true;
+          this.activeCommandApproval = undefined;
+          this.postState();
+          resolve(result);
+        }
+      };
+
+      const disposable = token.onCancellationRequested(() => {
+        disposable.dispose();
+        finish({
+          approved: false,
+          resultText: "Command execution was cancelled before approval completed."
+        });
+      });
+
+      this.activeCommandApproval = {
+        request,
+        resolve: (result) => {
+          disposable.dispose();
+          finish(result);
+        }
+      };
+
+      this.postState();
+    });
+  }
+
   private buildToolMeta(toolName: string, argsString: string): ChatHistoryMessage["toolMeta"] | undefined {
     const argsObj = this.parseToolArgs(argsString);
     if (!argsObj) {
@@ -994,6 +1137,9 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
     this.activeEmbeddedTerminalId = undefined;
     this.embeddedTerminalVisible = false;
     this.embeddedTerminalSnapshot = undefined;
+    this.allowCommandExecutionForConversation = false;
+    this.sessionAllowedCommandKeys.clear();
+    this.sessionDeniedCommandKeys.clear();
     this.stopEmbeddedTerminalPolling();
     this.client.resetReasoningOffSession();
     this.postState();
@@ -1087,6 +1233,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       images?: unknown;
       contextId?: unknown;
       terminalId?: unknown;
+      choice?: unknown;
     };
 
     if (message.type === "ready") {
@@ -1186,6 +1333,26 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
         } catch (e: any) {
           vscode.window.showErrorMessage(`Failed to open file: ${e.message}`);
         }
+      }
+      return;
+    }
+
+    if (message.type === "approveCommand" && typeof message.choice === "string" && this.activeCommandApproval) {
+      if (message.choice === "alwaysThisChat") {
+        this.allowCommandExecutionForConversation = true;
+        this.activeCommandApproval.resolve({ approved: true });
+      } else if (message.choice === "alwaysThisCommand") {
+        this.sessionAllowedCommandKeys.add(this.activeCommandApproval.request.key);
+        this.activeCommandApproval.resolve({ approved: true });
+      } else if (message.choice === "allow") {
+        this.activeCommandApproval.resolve({ approved: true });
+      } else {
+        // Explicitly denying adds it to the deny list for the session just like the prompt entails.
+        this.sessionDeniedCommandKeys.add(this.activeCommandApproval.request.key);
+        this.activeCommandApproval.resolve({ 
+          approved: false, 
+          resultText: this.activeCommandApproval.request.deniedText 
+        });
       }
       return;
     }
@@ -1396,20 +1563,46 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           for (const tc of result.tool_calls) {
             const summaryInfo = this.buildToolSummary(tc.function.name, tc.function.arguments);
             const toolMeta = this.buildToolMeta(tc.function.name, tc.function.arguments);
+            const approvalRequest = this.isCommandExecutionTool(tc.function.name)
+              ? this.buildCommandApprovalRequest(tc.function.name, tc.function.arguments)
+              : undefined;
             const toolMessage: ChatHistoryMessage = {
               role: "tool",
               name: tc.function.name,
               toolSummary: summaryInfo,
               tool_call_id: tc.id,
               toolMeta,
-              content: tc.function.name === "runCommand" || tc.function.name === "runInTerminal"
+              content: approvalRequest?.pendingText ?? (
+                tc.function.name === "runCommand" || tc.function.name === "runInTerminal"
                 ? "[Starting terminal command...]"
                 : ""
+              )
             };
 
             this.history.push(toolMessage);
             this.history = this.history.slice(-30);
             this.postState();
+
+            if (approvalRequest) {
+              const approval = await this.requestCommandApproval(approvalRequest, tokenSource.token);
+              if (!approval.approved) {
+                toolMessage.content = approval.resultText || approvalRequest.deniedText;
+                toolMessage.renderedContent = undefined;
+                this.postState();
+
+                if (tokenSource.token.isCancellationRequested) {
+                  runNext = false;
+                  break;
+                }
+                continue;
+              }
+
+              if (approvalRequest.startText) {
+                toolMessage.content = approvalRequest.startText;
+                toolMessage.renderedContent = undefined;
+                this.postState();
+              }
+            }
 
             const toolResult = await executeTool(tc.function.name, tc.function.arguments, {
               onUpdate: (text) => {
@@ -1586,7 +1779,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       pendingContextBlocks: this.pendingContextBlocks,
       contextUsage,
       embeddedTerminal: this.embeddedTerminalSnapshot,
-      embeddedTerminalVisible: this.embeddedTerminalVisible
+      embeddedTerminalVisible: this.embeddedTerminalVisible,
+      activeCommandApproval: this.activeCommandApproval?.request
     });
   }
 
