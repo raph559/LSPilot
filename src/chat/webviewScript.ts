@@ -988,7 +988,22 @@ export const chatWebviewScript = `
         if (state.plan) {
           planContainerEl.classList.remove("hidden");
           const planContentEl = document.getElementById("planContent");
-          if (planContentEl) planContentEl.innerHTML = state.plan;
+          if (planContentEl) {
+            if (typeof state.plan === "string") {
+              planContentEl.innerHTML = state.plan;
+            } else if (Array.isArray(state.plan)) {
+              planContentEl.innerHTML = state.plan.map(task => {
+                const isDone = task.status === 'done';
+                const isProg = task.status === 'in-progress';
+                const icon = isDone ? 'codicon-check' : (isProg ? 'codicon-sync codicon-modifier-spin' : 'codicon-circle-large-outline');
+                const color = isDone ? 'var(--vscode-testing-iconPassed)' : (isProg ? 'var(--vscode-charts-blue)' : 'var(--vscode-foreground)');
+                return '<div class="plan-task' + (isDone ? ' done' : '') + '">' +
+                       '<div class="plan-task-icon" style="color: ' + color + '"><i class="codicon ' + icon + '"></i></div>' +
+                       '<div class="plan-task-title">' + escapeHtml(task.title) + '</div>' +
+                       '</div>';
+              }).join('');
+            }
+          }
         } else {
           planContainerEl.classList.add("hidden");
         }

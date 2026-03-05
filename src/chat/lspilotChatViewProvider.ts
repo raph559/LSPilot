@@ -88,7 +88,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
 
   private view: vscode.WebviewView | undefined;
   private mode: "ask" | "plan" | "agent" = "agent";
-  private plan: string | undefined;
+  private plan: any[] | undefined;
   private history: ChatHistoryMessage[] = [];
   private busy = false;
   private activeRequest: vscode.CancellationTokenSource | undefined;
@@ -1505,15 +1505,15 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
           } else if (this.mode === "plan") {
             const readOnlyTools = ["readFile", "readFileRange", "listDirectory", "pathExists", "fileStats", "findFiles", "searchInFiles"];
             toolsToUse = toolsDefinition.filter((t: any) => readOnlyTools.includes(t.function.name));
-            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a markdown checklist. Every step MUST be a checkbox like `- [ ] Step`.", parameters: { type: "object", properties: { planText: { type: "string", description: "The plan formatted as a Markdown checklist." } }, required: ["planText"] } } });
-            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a markdown-formatted checklist string so the plan is saved for the agent phase. The plan MUST be a strict checklist using `- [ ] ` syntax.";
+            toolsToUse.push({ type: "function", function: { name: "setPlan", description: "Save the step-by-step plan you created for the user. Call this tool with a structured list of tasks.", parameters: { type: "object", properties: { tasks: { type: "array", items: { type: "object", properties: { id: { type: "number" }, title: { type: "string", description: "VERY concise title for the GUI (2-5 words)." }, description: { type: "string", description: "Detailed instructions the agent will need to complete this task." }, status: { type: "string", enum: ["todo", "in-progress", "done"], description: "Current status." } }, required: ["id", "title", "description", "status"] } } }, required: ["tasks"] } } });
+            systemPromptOverride = "You are in PLAN mode. Analyze the request and figure out a step-by-step plan. You are not allowed to make edits directly. You MUST call the 'setPlan' tool with a JSON array of tasks so the plan is saved for the agent phase.";
           } else if (this.mode === "agent") {
             toolsToUse = [...toolsDefinition];
               if (this.plan) {
-                toolsToUse.push({ type: 'function', function: { name: 'updatePlan', description: 'Update the current step-by-step plan you are working on. Call this tool with an updated markdown checklist whenever you complete a step. Every step MUST be a checkbox like `- [ ] Step`.', parameters: { type: 'object', properties: { planText: { type: 'string', description: 'The updated plan formatted as a Markdown checklist.' } }, required: ['planText'] } } });
+                toolsToUse.push({ type: 'function', function: { name: 'updatePlan', description: 'Update the current step-by-step plan you are working on. Call this tool whenever you complete a task or change its status.', parameters: { type: "object", properties: { tasks: { type: "array", items: { type: "object", properties: { id: { type: "number" }, title: { type: "string" }, description: { type: "string" }, status: { type: "string", enum: ["todo", "in-progress", "done"] } }, required: ["id", "title", "description", "status"] } } }, required: ["tasks"] } } });
               }
             if (this.plan) {
-              systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + this.plan;
+              systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + JSON.stringify(this.plan, null, 2);
             }
           }
         const requestHistory = [...this.history];
@@ -1640,8 +1640,8 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
             if (tc.function.name === "setPlan" || tc.function.name === "updatePlan") {
               try {
                 const args = JSON.parse(tc.function.arguments);
-                this.plan = args.planText;
-                toolResult = { text: "Plan successfully saved and displayed to user in Plan mode." };
+                this.plan = args.tasks;
+                toolResult = { text: "Plan successfully saved and displayed." };
                 this.postState();
               } catch (e) {
                 toolResult = { text: "Failed to parse arguments" };
@@ -1816,7 +1816,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
       busy: this.busy,
       busyStartTimeMs: this.busyStartTimeMs,
       mode: this.mode,
-      plan: this.plan ? md.render(this.plan) : undefined,
+      plan: this.plan,
       modelLabel,
       modelLoading: this.modelLoadInProgress,
       thinkingEnabled: this.thinkingEnabled,

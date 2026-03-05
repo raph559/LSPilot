@@ -1062,6 +1062,29 @@ export function getWebviewStyles(extensionUri: vscode.Uri): string {
     .plan-container p {
       margin: 4px 0;
     }
+    .plan-task {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin-bottom: 8px;
+      padding: 4px 0;
+    }
+    .plan-task:last-child {
+      margin-bottom: 0;
+    }
+    .plan-task.done .plan-task-title {
+      opacity: 0.6;
+      text-decoration: line-through;
+    }
+    .plan-task-icon {
+      margin-top: 2px;
+      flex-shrink: 0;
+    }
+    .plan-task-title {
+      font-size: 13px;
+      line-height: 1.4;
+      font-weight: 500;
+    }
     .plan-container ul.contains-task-list {
       list-style-type: none;
       padding-left: 0;
