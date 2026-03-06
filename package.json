@@ -2,7 +2,7 @@
   "name": "lspilot",
   "displayName": "LSPilot",
   "description": "Copilot-like inline completions powered by LM Studio.",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "publisher": "raph559",
   "license": "MIT",
   "repository": {
