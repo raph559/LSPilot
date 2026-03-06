@@ -3,7 +3,6 @@
 **/tsconfig.json
 **/*.ts
 src/**
-node_modules/**
 package-lock.json
 lmstudio-test.js
 test*.js
