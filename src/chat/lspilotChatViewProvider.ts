@@ -1541,7 +1541,7 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
                 toolsToUse.push({ type: 'function', function: { name: 'updatePlan', description: 'Update the current step-by-step plan you are working on. Call this tool whenever you complete a task or change its status.', parameters: { type: "object", properties: { tasks: { type: "array", items: { type: "object", properties: { id: { type: "number" }, title: { type: "string" }, description: { type: "string" }, status: { type: "string", enum: ["todo", "in-progress", "done"] } }, required: ["id", "title", "description", "status"] } } }, required: ["tasks"] } } });
               }
             if (this.plan) {
-              systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + JSON.stringify(this.plan, null, 2);
+              systemPromptOverride = "You are in AGENT mode. The following plan has been made by the user. Try to follow it and implement the steps:\n\n" + JSON.stringify(this.plan, null, 2) + "\n\nCRITICAL: You MUST use the `updatePlan` tool to update the task status to 'in-progress' before starting work on a step, and to 'done' after completing it. Always supply the full list of tasks when updating.";
             }
           }
 
@@ -1678,8 +1678,21 @@ export class LSPilotChatViewProvider implements vscode.WebviewViewProvider {
                 const args = JSON.parse(tc.function.arguments);
                 if (tc.function.name === "setPlan") {
                   args.tasks.forEach((t: any) => { t.status = "todo"; });
+                  this.plan = args.tasks;
+                } else if (tc.function.name === "updatePlan" && this.plan) {
+                  args.tasks.forEach((t: any) => {
+                    const existing = this.plan!.find((p: any) => p.id === t.id);
+                    if (existing) {
+                      if (t.status) existing.status = t.status;
+                      if (t.title) existing.title = t.title;
+                      if (t.description) existing.description = t.description;
+                    } else {
+                      this.plan!.push(t);
+                    }
+                  });
+                } else if (tc.function.name === "updatePlan") {
+                  this.plan = args.tasks;
                 }
-                this.plan = args.tasks;
                 toolResult = { text: "Plan successfully saved and displayed." };
                 this.postState();
               } catch (e) {
