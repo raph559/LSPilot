@@ -1401,7 +1401,7 @@ export class LMStudioClient {
     const model = await this.resolveModel(settings);
     await this.loadModel(model, token);
 
-    let contextualHistory = history.slice(-20);
+    let contextualHistory = [...history];
     
     // Ensure at least one user message is present to satisfy LM Studio jinja templates
     if (!contextualHistory.some(m => m.role === "user")) {
@@ -1513,7 +1513,7 @@ export class LMStudioClient {
       "Return only your final answer.";
 
     const transcriptLines: string[] = [];
-    for (const msg of history.slice(-20)) {
+    for (const msg of history) {
       if (msg.role === "tool") {
         continue;
       }
